@@ -5,10 +5,15 @@ import { SANDBOX_CONFIG_PATH, SANDBOX_CONFIG_PATH_GLOBAL } from "./constants";
 
 export type SandboxConfigMounts = Record<string, "readonly" | "readwrite">;
 export type SandboxConfigPermissions = Record<string, "deny" | "ask" | "allow" | "allow:sandbox">;
+export type SandboxConfigEnvFilter = Record<string, "allow" | "deny">;
 
 export interface SandboxConfig {
-    mounts: SandboxConfigMounts,
-    permissions: SandboxConfigPermissions,
+    sandbox: {
+        mounts: SandboxConfigMounts;
+        env?: Record<string, string>;  // custom env vars
+        inheritEnv?: SandboxConfigEnvFilter;  // filter for existing env vars
+    };
+    permissions: SandboxConfigPermissions;
 }
 
 function tryLoad(path: string): SandboxConfig | null {
@@ -24,7 +29,11 @@ function tryLoad(path: string): SandboxConfig | null {
         }
 
         return {
-            mounts: data.mounts ?? {},
+            sandbox: {
+                mounts: data.sandbox?.mounts ?? {},
+                env: data.sandbox?.env,
+                inheritEnv: data.sandbox?.inheritEnv,
+            },
             permissions: data.permissions ?? {},
         } as SandboxConfig;
     } catch (e) {
@@ -76,7 +85,11 @@ let _config: SandboxConfig | null = null;
 
 function defaultConfig(): SandboxConfig {
   return {
-      mounts: {},
+      sandbox: {
+          mounts: {},
+          env: {},
+          inheritEnv: {},
+      },
       permissions: {},
   }
 }

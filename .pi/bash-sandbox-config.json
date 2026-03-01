@@ -1,12 +1,16 @@
 {
-  "mounts": {},
+  "sandbox": {
+    "mounts": {
+      "~/.nvm": "readonly"
+    }
+  },
   "permissions": {
-    "npm test": "allow",
-    "npm test *": "allow",
-    "npm run test:*": "allow",
-    "cd */pi-bash-sandbox/ && npm test": "allow",
-    "cd */pi-bash-sandbox/ && npm test *": "allow",
-    "cd */pi-bash-sandbox/ && npm run test:*": "allow",
+    "npm test": "allow:sandbox",
+    "npm test *": "allow:sandbox",
+    "npm run test:*": "allow:sandbox",
+    "cd */pi-bash-sandbox/ && npm test": "allow:sandbox",
+    "cd */pi-bash-sandbox/ && npm test *": "allow:sandbox",
+    "cd */pi-bash-sandbox/ && npm run test:*": "allow:sandbox",
     "ls *": "allow",
     "* | *": "ask",
     "ls * | head *": "allow",

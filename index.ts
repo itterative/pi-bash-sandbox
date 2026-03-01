@@ -49,7 +49,7 @@ export default function (pi: ExtensionAPI) {
 
         if (config !== null) {
           ctx.ui.notify(
-              `pi-bash-sandbox: loaded config has ${Object.entries(config.mounts).length} mount(s) and ${Object.entries(config.permissions).length} permission(s).\n`,
+              `pi-bash-sandbox: loaded config has ${Object.entries(config.sandbox.mounts).length} mount(s) and ${Object.entries(config.permissions).length} permission(s).\n`,
               "info",
           );
         }
