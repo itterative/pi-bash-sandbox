@@ -1,0 +1,16 @@
+{
+  "mounts": {},
+  "permissions": {
+    "npm test": "allow",
+    "npm test *": "allow",
+    "npm run test:*": "allow",
+    "cd */pi-bash-sandbox/ && npm test": "allow",
+    "cd */pi-bash-sandbox/ && npm test *": "allow",
+    "cd */pi-bash-sandbox/ && npm run test:*": "allow",
+    "ls *": "allow",
+    "* | *": "ask",
+    "ls * | head *": "allow",
+    "* | * | *": "ask",
+    "sudo *": "deny"
+  }
+}
