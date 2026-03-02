@@ -85,7 +85,16 @@ function isChainOperator(value: string): boolean {
 function matchArgs(
     commandArgs: string[],
     patternMatchers: PermissionMatcher[],
+    depth: number = 0,
 ): boolean {
+    const MAX_DEPTH = 50;
+    const maxIterations = (commandArgs.length + patternMatchers.length) * 2;
+    let iterations = 0;
+
+    if (depth > MAX_DEPTH) {
+        throw new Error(`matchArgs: exceeded maximum depth (${MAX_DEPTH})`);
+    }
+
     // Empty pattern matches empty command
     if (patternMatchers.length === 0) {
         return commandArgs.length === 0;
@@ -96,6 +105,10 @@ function matchArgs(
     let lookahead: PermissionMatcher | null = null;
 
     while (patIdx < patternMatchers.length) {
+        if (++iterations > maxIterations) {
+            throw new Error(`matchArgs: exceeded maximum iterations (${maxIterations}), possible infinite loop`);
+        }
+
         if (cmdIdx >= commandArgs.length) {
             return false;
         }
@@ -148,7 +161,7 @@ function matchArgs(
                 const cmdContent = getSubshellContent(argument);
                 const cmdArgs = parseBashArgs(cmdContent);
 
-                if (!matchArgs(cmdArgs, pattern.subMatchers)) {
+                if (!matchArgs(cmdArgs, pattern.subMatchers, depth + 1)) {
                     return false;
                 }
             }
@@ -268,19 +281,30 @@ export default function getPermission(
     command: string,
     configPermissions?: SandboxConfigPermissions,
 ): Permission {
-    const permissions = getPermissions(configPermissions);
-    const commandArgs = parseBashArgs(command);
+    let permissions: PermissionMatch[];
+    let commandArgs: string[];
+
+    try {
+        permissions = getPermissions(configPermissions);
+        commandArgs = parseBashArgs(command);
+    } catch {
+        return "ask";
+    }
 
     let match: Permission = "ask";
 
     // note: this will match the last one (similar to opencode)
     //       could also try a specificity approach
     for (const permission of permissions) {
-        if (!matchArgs(commandArgs, permission.matchers)) {
+        try {
+            if (!matchArgs(commandArgs, permission.matchers)) {
+                continue;
+            }
+
+            match = permission.value;
+        } catch {
             continue;
         }
-
-        match = permission.value;
     }
 
     return match;

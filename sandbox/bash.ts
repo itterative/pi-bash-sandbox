@@ -56,9 +56,15 @@ export function parseBashArgs(command: string): string[] {
     const args: string[] = [];
     let current = "";
     let quote: string | null = null;
-    let i = 0;
 
+    let iterations = 0;
+    const maxIterations = command.length * 2;
+
+    let i = 0;
     while (i < command.length) {
+        if (++iterations > maxIterations) {
+            throw new Error(`parseBashArgs: exceeded maximum iterations (${maxIterations}), possible infinite loop`);
+        }
         const char = command[i];
 
         if (quote) {
