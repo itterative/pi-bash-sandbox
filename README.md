@@ -128,6 +128,66 @@ Patterns are matched on last-match basis (similar to OpenCode). This means that 
 }
 ```
 
+#### Multi-Line Commands
+
+Commands separated by newlines are parsed as separate commands. The permission system evaluates each command independently and returns the **most restrictive** result:
+
+- If any command is `deny` → returns `deny`
+- If any command is `ask` → returns `ask`
+- Otherwise returns the most restrictive among `allow`/`allow:sandbox`
+
+**Example configuration:**
+```json
+{
+    "permissions": {
+        "echo *": "allow",
+        "ls *": "allow:sandbox",
+        "rm *": "deny"
+    }
+}
+```
+
+**All allowed → `allow`:**
+```bash
+echo hello
+echo world
+```
+
+**Mixed allow/allow:sandbox → `allow:sandbox`:**
+```bash
+echo hello
+ls -la
+```
+
+**One denied → `deny`:**
+```bash
+echo hello
+rm file
+```
+
+**Unknown command → `ask`:**
+```bash
+ls -la
+sudo apt update
+```
+
+#### Line Continuations
+
+Lines ending with `\` are joined together before parsing:
+
+**Matches `echo hello world`:**
+```bash
+echo hello \
+world
+```
+
+**Does not match `echo hello world`:**
+```bash
+echo hello \
+&& rm file
+```
+This parses as `echo hello && rm file` (a chained command).
+
 #### Advanced Pattern Matching
 
 ##### Wildcards
