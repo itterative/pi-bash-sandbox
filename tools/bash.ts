@@ -141,10 +141,10 @@ export default function registerBashToolHook(pi: ExtensionAPI) {
         if (sandboxed) {
             event.input.command = sandbox(bwrap, event.input.command);
 
-            ctx.ui.notify(
-                `pi-bash-sandbox: wrapped command with bwrap:\n  ${event.input.command}\n`,
-                "info"
-            );
+            // ctx.ui.notify(
+            //     `pi-bash-sandbox: wrapped command with bwrap:\n  ${event.input.command}\n`,
+            //     "info"
+            // );
         }
 
         return { block: false };
