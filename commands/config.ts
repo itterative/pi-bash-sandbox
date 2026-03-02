@@ -3,6 +3,10 @@
  *
  * Provides a /bash-sandbox-config command that displays the currently loaded
  * sandbox configuration.
+ *
+ * Subcommands:
+ * - show (default): Display the current configuration
+ * - reload: Reload the configuration from disk
  */
 
 import {
@@ -12,7 +16,12 @@ import {
     type ExtensionCommandContext,
 } from "@mariozechner/pi-coding-agent";
 
-import { Container, Spacer, Text } from "@mariozechner/pi-tui";
+import {
+    AutocompleteItem,
+    Container,
+    Spacer,
+    Text,
+} from "@mariozechner/pi-tui";
 
 import sandboxConfig from "../common/config";
 
@@ -45,7 +54,10 @@ async function showConfig(_args: string, ctx: ExtensionCommandContext) {
         // Header
         container.addChild(
             new Text(
-                theme.fg("accent", theme.bold("  pi-bash-sandbox: Current configuration")),
+                theme.fg(
+                    "accent",
+                    theme.bold("  pi-bash-sandbox: Current configuration"),
+                ),
                 1,
                 0,
             ),
@@ -53,18 +65,15 @@ async function showConfig(_args: string, ctx: ExtensionCommandContext) {
         container.addChild(new Spacer(1));
 
         // Sandbox section
-        container.addChild(
-            new Text(theme.fg("success", "  Sandbox:"), 1, 0),
-        );
+        container.addChild(new Text(theme.fg("success", "  Sandbox:"), 1, 0));
 
         // Mounts
         const mounts = Object.entries(config.sandbox.mounts);
         if (mounts.length > 0) {
-            container.addChild(
-                new Text(theme.fg("dim", "    Mounts:"), 1, 0),
-            );
+            container.addChild(new Text(theme.fg("dim", "    Mounts:"), 1, 0));
             for (const [path, access] of mounts) {
-                const accessColor = access === "readonly" ? "warning" : "success";
+                const accessColor =
+                    access === "readonly" ? "warning" : "success";
                 container.addChild(
                     new Text(
                         `      ${path} → ${theme.fg(accessColor, access)}`,
@@ -86,21 +95,22 @@ async function showConfig(_args: string, ctx: ExtensionCommandContext) {
             );
             for (const [key, value] of Object.entries(config.sandbox.env)) {
                 container.addChild(
-                    new Text(
-                        `      ${key}=${theme.fg("muted", value)}`,
-                        1,
-                        0,
-                    ),
+                    new Text(`      ${key}=${theme.fg("muted", value)}`, 1, 0),
                 );
             }
         }
 
         // Inherit env filter
-        if (config.sandbox.inheritEnv && Object.keys(config.sandbox.inheritEnv).length > 0) {
+        if (
+            config.sandbox.inheritEnv &&
+            Object.keys(config.sandbox.inheritEnv).length > 0
+        ) {
             container.addChild(
                 new Text(theme.fg("dim", "    Inherit env filter:"), 1, 0),
             );
-            for (const [key, action] of Object.entries(config.sandbox.inheritEnv)) {
+            for (const [key, action] of Object.entries(
+                config.sandbox.inheritEnv,
+            )) {
                 const actionColor = action === "allow" ? "success" : "error";
                 container.addChild(
                     new Text(
@@ -121,7 +131,9 @@ async function showConfig(_args: string, ctx: ExtensionCommandContext) {
 
         const permissions = Object.entries(config.permissions);
         if (permissions.length > 0) {
-            const maxPatternLength = Math.max(...permissions.map(([p]) => p.length));
+            const maxPatternLength = Math.max(
+                ...permissions.map(([p]) => p.length),
+            );
 
             for (const [pattern, perm] of permissions) {
                 let permColor: ThemeColor;
@@ -154,9 +166,7 @@ async function showConfig(_args: string, ctx: ExtensionCommandContext) {
 
         // Audit section
         container.addChild(new Spacer(1));
-        container.addChild(
-            new Text(theme.fg("success", "  Audit:"), 1, 0),
-        );
+        container.addChild(new Text(theme.fg("success", "  Audit:"), 1, 0));
 
         if (config.audit?.provider && config.audit?.model) {
             container.addChild(
@@ -168,7 +178,14 @@ async function showConfig(_args: string, ctx: ExtensionCommandContext) {
             );
         } else {
             container.addChild(
-                new Text(theme.fg("dim", "    Model: (using current session model): "), 1, 0),
+                new Text(
+                    theme.fg(
+                        "dim",
+                        "    Model: (using current session model): ",
+                    ),
+                    1,
+                    0,
+                ),
             );
         }
 
@@ -191,8 +208,65 @@ async function showConfig(_args: string, ctx: ExtensionCommandContext) {
 }
 
 export default function registerConfigCommand(pi: ExtensionAPI) {
+    const configSubcommands: AutocompleteItem[] = [
+        {
+            value: "show",
+            label: "show (default)",
+            description: "Display the currently loaded sandbox configuration",
+        },
+        {
+            value: "reload",
+            label: "reload",
+            description: "Reload the configuration from disk",
+        },
+    ];
+
     pi.registerCommand("bash-sandbox-config", {
         description: "Show the currently loaded sandbox configuration",
-        handler: showConfig,
+        getArgumentCompletions: (prefix: string) => {
+            const completions: AutocompleteItem[] = [];
+
+            for (const subcommand of configSubcommands) {
+                if (prefix && !subcommand.value.startsWith(prefix)) {
+                    continue;
+                }
+
+                completions.push(subcommand);
+            }
+
+            return completions;
+        },
+        handler: async (args, ctx) => {
+            const subcommand = args.trim();
+
+            switch (subcommand) {
+                case "reload":
+                    try {
+                        sandboxConfig.load(ctx.cwd);
+                        ctx.ui.notify(
+                            "pi-bash-sandbox: Configuration reloaded from disk",
+                            "info",
+                        );
+                    } catch (e) {
+                        const error = e as Error;
+                        ctx.ui.notify(
+                            `pi-bash-sandbox: Failed to reload config: ${error.message}`,
+                            "error",
+                        );
+                    }
+                    break;
+
+                case "show":
+                case "":
+                    await showConfig(args, ctx);
+                    break;
+
+                default:
+                    ctx.ui.notify(
+                        `pi-bash-sandbox: Unknown subcommand: ${args}.`,
+                        "warning",
+                    );
+            }
+        },
     });
 }

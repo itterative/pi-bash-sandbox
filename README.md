@@ -22,6 +22,8 @@ This extension integrates with the pi coding agent to intercept and control bash
 ### Commands
 
 - `/bash-sandbox-config` - Display the currently loaded sandbox configuration
+  - `/bash-sandbox-config show` - Display the current configuration (default)
+  - `/bash-sandbox-config reload` - Reload the configuration from disk
 - `/bash-sandbox-audit` - Analyze commands you've allowed and suggest permission patterns
   - `/bash-sandbox-audit analyze` - Use the model to analyze commands and suggest patterns (default)
   - `/bash-sandbox-audit list` - List recent commands that were tracked for auditing
