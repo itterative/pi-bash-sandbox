@@ -7,6 +7,7 @@ import type {
 } from "@mariozechner/pi-coding-agent";
 
 import sandboxConfig from "../common/config";
+import { ALLOWED_COMMAND_ENTRY_TYPE, type AllowedCommandEntry } from "../common/audit";
 import sandbox from "../sandbox/bubblewrap";
 import getPermission, { Permission } from "../sandbox/permissions";
 
@@ -90,6 +91,7 @@ export default function registerBashToolHook(pi: ExtensionAPI) {
 
         let blocked: boolean = true;
         let sandboxed: boolean = true;
+        const originalCommand = event.input.command;  // Save before sandbox wrapping
 
         switch (permission) {
             case "allow:sandbox":
@@ -129,6 +131,12 @@ export default function registerBashToolHook(pi: ExtensionAPI) {
                 reason: "Command execution blocked by user.",
             };
         }
+
+        // Track allowed command for audit
+        pi.appendEntry<AllowedCommandEntry>(ALLOWED_COMMAND_ENTRY_TYPE, {
+            command: originalCommand,
+            permission: sandboxed ? "allow:sandbox" : "allow",
+        });
 
         if (sandboxed) {
             event.input.command = sandbox(bwrap, event.input.command);

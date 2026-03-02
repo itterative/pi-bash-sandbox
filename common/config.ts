@@ -7,6 +7,11 @@ export type SandboxConfigMounts = Record<string, "readonly" | "readwrite">;
 export type SandboxConfigPermissions = Record<string, "deny" | "ask" | "allow" | "allow:sandbox">;
 export type SandboxConfigEnvFilter = Record<string, "allow" | "deny">;
 
+export interface SandboxConfigAudit {
+    provider?: string;
+    model?: string;
+}
+
 export interface SandboxConfig {
     sandbox: {
         mounts: SandboxConfigMounts;
@@ -14,6 +19,7 @@ export interface SandboxConfig {
         inheritEnv?: SandboxConfigEnvFilter;  // filter for existing env vars
     };
     permissions: SandboxConfigPermissions;
+    audit?: SandboxConfigAudit;
 }
 
 function tryLoad(path: string): SandboxConfig | null {
@@ -35,6 +41,10 @@ function tryLoad(path: string): SandboxConfig | null {
                 inheritEnv: data.sandbox?.inheritEnv,
             },
             permissions: data.permissions ?? {},
+            audit: data.audit ? {
+                provider: data.audit.provider,
+                model: data.audit.model,
+            } : undefined,
         } as SandboxConfig;
     } catch (e) {
         return null;
