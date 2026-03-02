@@ -12,9 +12,22 @@
     "cd */pi-bash-sandbox/ && npm test *": "allow:sandbox",
     "cd */pi-bash-sandbox/ && npm run test:*": "allow:sandbox",
     "ls *": "allow",
-    "* | *": "ask",
     "ls * | head *": "allow",
-    "* | * | *": "ask",
-    "sudo *": "deny"
+    "sudo *": "deny",
+    "pwd": "allow",
+    "ls -la": "allow",
+    "find . -type f -name \"*.ts\" | head *": "allow",
+    "cat package.json": "allow",
+    "git status": "allow",
+    "wc -l *.ts": "allow",
+    "echo *": "allow:sandbox",
+    "git log *": "allow:sandbox",
+    "git diff * | head *": "allow:sandbox",
+    "npm test * | head *": "allow:sandbox",
+    "npm run *": "allow:sandbox",
+    "npx tsc *": "allow:sandbox",
+    "cd */pi-bash-sandbox && npm run *": "allow:sandbox",
+    "cd */pi-bash-sandbox && grep * *.ts": "allow:sandbox",
+    "grep * *.ts": "allow:sandbox"
   }
 }
