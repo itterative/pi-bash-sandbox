@@ -58,25 +58,48 @@ function tryLoad(path: string): SandboxConfig | null {
 function mergeRecords<K extends string, V>(
     base: Record<K, V> | undefined,
     override: Record<K, V> | undefined
-): Record<K, V> {
+): Record<K, V> | undefined {
+    let hasRecords = false;
     const map = new Map<K, V>();
 
     // Add base entries first
-    if (base) {
+    if (base !== undefined) {
+        hasRecords = true;
+
         for (const [key, value] of Object.entries(base) as [K, V][]) {
             map.set(key, value);
         }
     }
 
     // Add override entries - delete first if exists to ensure it moves to end
-    if (override) {
+    if (override !== undefined) {
+        hasRecords = true;
+
         for (const [key, value] of Object.entries(override) as [K, V][]) {
             map.delete(key);  // Remove if exists so re-insert places it at end
             map.set(key, value);
         }
     }
 
+    if (!hasRecords) {
+        return undefined;
+    }
+
     return Object.fromEntries(map) as Record<K, V>;
+}
+
+function mergeRecordsOrDefault<K extends string, V>(
+    base: Record<K, V> | undefined,
+    override: Record<K, V> | undefined,
+    _default: Record<K, V>
+): Record<K, V> {
+    const merged = mergeRecords(base, override);
+
+    if (merged === undefined) {
+        return _default;
+    }
+
+    return merged;
 }
 
 function mergeConfigs(global: SandboxConfig | null, project: SandboxConfig | null): SandboxConfig {
@@ -88,11 +111,11 @@ function mergeConfigs(global: SandboxConfig | null, project: SandboxConfig | nul
 
     return {
         sandbox: {
-            mounts: mergeRecords(base.sandbox.mounts, project.sandbox.mounts),
+            mounts: mergeRecordsOrDefault(base.sandbox.mounts, project.sandbox.mounts, {}),
             env: mergeRecords(base.sandbox.env, project.sandbox.env),
             inheritEnv: mergeRecords(base.sandbox.inheritEnv, project.sandbox.inheritEnv),
         },
-        permissions: mergeRecords(base.permissions, project.permissions),
+        permissions: mergeRecordsOrDefault(base.permissions, project.permissions, {}),
         audit: project.audit ?? base.audit,
     };
 }

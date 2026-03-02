@@ -26,6 +26,10 @@ function buildEnvCmd(sandboxConfig: SandboxConfig, options?: SandboxOptions): st
     const envConfig = sandboxConfig.sandbox?.env;
     const inheritEnvConfig = sandboxConfig.sandbox?.inheritEnv;
 
+    if (inheritEnvConfig !== undefined) {
+        cmd.push("--clearenv");
+    }
+
     // apply custom environment variables first
     if (envConfig) {
         for (const [key, value] of Object.entries(envConfig)) {
@@ -127,8 +131,6 @@ export default function sandbox(bwrap: string, command: string, options?: Sandbo
     const homeDir = env.HOME ?? os.homedir();
 
     const sandboxConfig = options?.config ?? config.current ?? config.default;
-
-    cmd.push("--clearenv");
 
     cmd.push("--bind", escapeArg(cwd), escapeArg(cwd));
 
