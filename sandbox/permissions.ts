@@ -1,6 +1,6 @@
 import sandboxConfig, { SandboxConfigPermissions } from "../common/config";
 import {
-    parseBashArgs,
+    parseBash,
     isHeredocOperator,
     isSubshell,
     isProcessSubstitution,
@@ -68,7 +68,7 @@ function patternToRegex(pattern: string): RegExp {
  * Check if a value is a chain operator (&&, ||, ;, |)
  */
 function isChainOperator(value: string): boolean {
-    return value === "&&" || value === "||" || value === ";" || value === "|";
+    return value === "&&" || value === "||" || value === ";" || value === "|" || value === "&";
 }
 
 /**
@@ -159,10 +159,17 @@ function matchArgs(
             // for subshells and process substitutions, match the nested content
             if (pattern.type === "subshell") {
                 const cmdContent = getSubshellContent(argument);
-                const cmdArgs = parseBashArgs(cmdContent);
+                const cmdArgsAll = parseBash(cmdContent);
 
-                if (!matchArgs(cmdArgs, pattern.subMatchers, depth + 1)) {
-                    return false;
+                // Empty subshell matches empty subshell pattern
+                if (cmdArgsAll.length === 0 && pattern.subMatchers.length === 0) {
+                    // Both empty, match succeeds
+                } else {
+                    for (const cmdArgs of cmdArgsAll) {
+                        if (!matchArgs(cmdArgs, pattern.subMatchers, depth + 1)) {
+                            return false;
+                        }
+                    }
                 }
             }
 
@@ -172,13 +179,13 @@ function matchArgs(
     }
 
     if (cmdIdx < commandArgs.length) {
-        // allow a single extra arg if the permission pattern doesn't have the heredoc delimiter (most cases)
-        const lastMatcher = patternMatchers[patternMatchers.length - 1];
+        // allow a single extra arg if the permission pattern has a heredoc operator
+        // (the closing delimiter may be extra in the command)
+        const hasHeredocOp = patternMatchers.some(
+            (m) => m.type === "heredoc-op",
+        );
 
-        if (
-            lastMatcher.type === "heredoc-delim" &&
-            cmdIdx === commandArgs.length - 1
-        ) {
+        if (hasHeredocOp && cmdIdx === commandArgs.length - 1) {
             return true;
         }
 
@@ -221,13 +228,37 @@ function createMatchers(args: string[]): PermissionMatcher[] {
         if (isSubshell(arg) || isProcessSubstitution(arg)) {
             // subshell/process substitution content create nested matchers
             const content = getSubshellContent(arg);
-            const subArgs = parseBashArgs(content);
-            const subMatchers = createMatchers(subArgs);
+            const subArgs = parseBash(content);
+
+            // Create a test function that checks type AND prefix
+            const argPrefix = arg.startsWith(">(") ? ">(" : arg.startsWith("<(") ? "<(" : arg.startsWith("`") ? "`" : "$(";
+            const testFn = (v: string) => {
+                // Check same type (subshell vs process substitution)
+                if (!isSubshell(v) && !isProcessSubstitution(v)) return false;
+                // Check same prefix ($(), ``, <(, >()
+                return v.startsWith(argPrefix);
+            };
+
+            // Empty subshell is valid
+            if (subArgs.length === 0) {
+                return {
+                    type: "subshell" as const,
+                    value: arg,
+                    test: testFn,
+                    subMatchers: [],
+                };
+            }
+
+            if (subArgs.length !== 1) {
+                throw new Error(`expected a single subshell bash command, found ${subArgs.length}`);
+            }
+
+            const subMatchers = createMatchers(subArgs[0]);
 
             return {
                 type: "subshell" as const,
                 value: arg,
-                test: (v: string) => isSubshell(v) || isProcessSubstitution(v),
+                test: testFn,
                 subMatchers,
             };
         }
@@ -260,14 +291,33 @@ function getPermissions(
 
     try {
         for (const permission of Object.entries(config)) {
-            const permissionArguments = parseBashArgs(permission[0]);
-            const matchers = createMatchers(permissionArguments);
+            try {
+              // Handle empty permission key specially
+              if (permission[0] === "" || permission[0].trim() === "") {
+                  _permissions.push({
+                      wildcard: permission[0],
+                      value: permission[1] as Permission,
+                      matchers: [{ type: "literal", value: "", test: (v: string) => v === "" }],
+                  });
+                  continue;
+              }
 
-            _permissions.push({
-                wildcard: permission[0],
-                value: permission[1] as Permission,
-                matchers,
-            });
+              const permissionArguments = parseBash(permission[0]);
+
+              if (permissionArguments.length !== 1) {
+                  throw new Error(`expected the rules to contain only one bash syntax, found ${permissionArguments.length}`);
+              }
+
+              const matchers = createMatchers(permissionArguments[0]);
+
+              _permissions.push({
+                  wildcard: permission[0],
+                  value: permission[1] as Permission,
+                  matchers,
+              });
+            } catch (e) {
+                throw new Error(`could not create permission matcher for pattern (${permission[0]}): ${e}`);
+            }
         }
     } catch (e) {
         throw new Error(`Failed to parse permissions in config: ${e}`);
@@ -277,27 +327,20 @@ function getPermissions(
     return permissions;
 }
 
-export default function getPermission(
-    command: string,
-    configPermissions?: SandboxConfigPermissions,
+/**
+ * Get the permission level for a single command (no newlines).
+ */
+function getSingleCommandPermission(
+    commands: string[],
+    permissions: PermissionMatch[],
 ): Permission {
-    let permissions: PermissionMatch[];
-    let commandArgs: string[];
-
-    try {
-        permissions = getPermissions(configPermissions);
-        commandArgs = parseBashArgs(command);
-    } catch {
-        return "ask";
-    }
-
     let match: Permission = "ask";
 
     // note: this will match the last one (similar to opencode)
     //       could also try a specificity approach
     for (const permission of permissions) {
         try {
-            if (!matchArgs(commandArgs, permission.matchers)) {
+            if (!matchArgs(commands, permission.matchers)) {
                 continue;
             }
 
@@ -308,4 +351,43 @@ export default function getPermission(
     }
 
     return match;
+}
+
+/**
+ * Return the more restrictive of two permissions.
+ * Order: deny > ask > allow:sandbox > allow
+ */
+function moreRestrictive(a: Permission, b: Permission): Permission {
+    const order: Permission[] = ["allow", "allow:sandbox", "ask", "deny"];
+    return order.indexOf(a) > order.indexOf(b) ? a : b;
+}
+
+export default function getPermission(
+    command: string,
+    configPermissions?: SandboxConfigPermissions,
+): Permission {
+    let permissions: PermissionMatch[];
+
+    try {
+        permissions = getPermissions(configPermissions);
+    } catch {
+        return "ask";
+    }
+
+    // Handle empty command as a special case for backward compatibility
+    if (command === "" || command.trim() === "") {
+        return getSingleCommandPermission([""], permissions);
+    }
+
+    const parsedCommands = parseBash(command);
+
+    if (parsedCommands.length === 0) {
+        return "ask";
+    }
+
+    // Return the most restrictive permission across all commands
+    return parsedCommands.reduce<Permission>((mostRestrictive, cmd) => {
+        const perm = getSingleCommandPermission(cmd, permissions);
+        return moreRestrictive(mostRestrictive, perm);
+    }, "allow");
 }

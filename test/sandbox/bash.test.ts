@@ -1,205 +1,217 @@
 import { describe, it, expect } from "vitest";
-import { parseBashArgs } from "../../sandbox/bash";
+import {
+    parseBash,
+    isHeredocOperator,
+    isSubshell,
+    isProcessSubstitution,
+    getSubshellContent,
+} from "../../sandbox/bash";
 
-describe("parseBashArgs", () => {
-    describe("basic parsing", () => {
-        it("should parse simple command", () => {
-            const result = parseBashArgs("echo hello");
-            expect(result).toEqual(["echo", "hello"]);
-        });
+interface ParseTest {
+    desc: string;
+    input: string;
+    expected: string[][];
+}
 
-        it("should parse command with multiple args", () => {
-            const result = parseBashArgs("git commit -m message");
-            expect(result).toEqual(["git", "commit", "-m", "message"]);
-        });
+const runParseTests = (tests: ParseTest[]) => {
+    it.each(tests)("$desc", ({ input, expected }) => {
+        expect(parseBash(input)).toEqual(expected);
+    });
+};
 
-        it("should handle commands with multiple spaces between args", () => {
-            const result = parseBashArgs("cmd  arg");
-            expect(result).toEqual(["cmd", "arg"]);
-        });
-
-        it("should handle leading/trailing whitespace", () => {
-            const result = parseBashArgs("  ls -la  ");
-            expect(result).toEqual(["ls", "-la"]);
-        });
-
-        it("should handle tabs as separators", () => {
-            const result = parseBashArgs("cmd\targ");
-            expect(result).toEqual(["cmd", "arg"]);
-        });
-
-        it("should handle empty command string", () => {
-            const result = parseBashArgs("");
-            expect(result).toEqual([]);
-        });
+describe("parseBash", () => {
+    describe("basic commands", () => {
+        runParseTests([
+            { desc: "simple command", input: "echo hello", expected: [["echo", "hello"]] },
+            { desc: "command with multiple args", input: "git commit -m message", expected: [["git", "commit", "-m", "message"]] },
+            { desc: "multiple spaces between args", input: "cmd  arg", expected: [["cmd", "arg"]] },
+            { desc: "leading/trailing whitespace", input: "  ls -la  ", expected: [["ls", "-la"]] },
+            { desc: "tabs as separators", input: "cmd\targ", expected: [["cmd", "arg"]] },
+            { desc: "empty input", input: "", expected: [] },
+            { desc: "whitespace only", input: "   \t  ", expected: [] },
+        ]);
     });
 
-    describe("quoted arguments", () => {
-        it("should handle double-quoted arguments with spaces", () => {
-            const result = parseBashArgs('npm run "dev server"');
-            expect(result).toEqual(["npm", "run", "dev server"]);
-        });
-
-        it("should handle single-quoted arguments with spaces", () => {
-            const result = parseBashArgs("cat 'hello world.txt'");
-            expect(result).toEqual(["cat", "hello world.txt"]);
-        });
-
-        it("should handle mixed quoting styles", () => {
-            const result = parseBashArgs('echo "hello" \'world\'');
-            expect(result).toEqual(["echo", "hello", "world"]);
-        });
-
-        it("should handle escaped space in argument", () => {
-            const result = parseBashArgs("echo hello\\ world");
-            expect(result).toEqual(["echo", "hello world"]);
-        });
+    describe("multiple commands", () => {
+        runParseTests([
+            { desc: "splits by newline", input: "echo hello\necho world", expected: [["echo", "hello"], ["echo", "world"]] },
+            { desc: "filters out empty lines", input: "echo hello\n\necho world\n", expected: [["echo", "hello"], ["echo", "world"]] },
+            { desc: "leading newlines", input: "\n\necho hello", expected: [["echo", "hello"]] },
+            { desc: "trailing newlines", input: "echo hello\n\n", expected: [["echo", "hello"]] },
+        ]);
     });
 
-    describe("heredoc parsing", () => {
-        it("should parse cat <<EOF with content", () => {
-            const result = parseBashArgs("cat <<EOF\ncontent\nEOF");
-            expect(result).toEqual(["cat", "<<", "EOF", "EOF"]);
-        });
-
-        it("should parse cat << OTHER with space", () => {
-            const result = parseBashArgs("cat << OTHER");
-            expect(result).toEqual(["cat", "<<", "OTHER"]);
-        });
-
-        it("should parse cat <<EOF without content", () => {
-            const result = parseBashArgs("cat <<EOF");
-            expect(result).toEqual(["cat", "<<", "EOF"]);
-        });
-
-        it("should parse heredoc with <<- operator", () => {
-            const result = parseBashArgs("cat <<-EOF\ncontent\nEOF");
-            expect(result).toEqual(["cat", "<<-", "EOF", "EOF"]);
-        });
+    describe("quoted strings", () => {
+        runParseTests([
+            { desc: "strips double quotes, preserves content", input: 'echo "hello world"', expected: [["echo", "hello world"]] },
+            { desc: "strips single quotes, preserves content", input: "echo 'hello world'", expected: [["echo", "hello world"]] },
+            { desc: "mixed quotes", input: 'echo "hello" \'world\'', expected: [["echo", "hello", "world"]] },
+            { desc: "adjacent quoted strings", input: 'echo "hello""world"', expected: [["echo", "helloworld"]] },
+            { desc: "quote in middle of unquoted", input: 'echo hello"world"goodbye', expected: [["echo", "helloworldgoodbye"]] },
+            { desc: "empty double quotes", input: 'echo ""', expected: [["echo", ""]] },
+            { desc: "empty single quotes", input: "echo ''", expected: [["echo", ""]] },
+            { desc: "escaped chars in double quotes", input: 'echo "hello \\"world\\""', expected: [["echo", 'hello \\"world\\"']] },
+            { desc: "unclosed double quote", input: 'echo "hello', expected: [["echo", "hello"]] },
+            { desc: "unclosed single quote", input: "echo 'hello", expected: [["echo", "hello"]] },
+        ]);
     });
 
-    describe("subshell parsing", () => {
-        it("should parse command with $(...) subshell", () => {
-            const result = parseBashArgs("echo $(echo hello)");
-            expect(result).toEqual(["echo", "$(echo hello)"]);
-        });
-
-        it("should parse command with backtick subshell", () => {
-            const result = parseBashArgs("echo `echo hello`");
-            expect(result).toEqual(["echo", "`echo hello`"]);
-        });
-
-        it("should parse nested subshells", () => {
-            const result = parseBashArgs("echo $(cat $(echo file.txt))");
-            expect(result).toEqual(["echo", "$(cat $(echo file.txt))"]);
-        });
-
-        it("should parse subshell with spaces", () => {
-            const result = parseBashArgs("echo $(ls -la /tmp)");
-            expect(result).toEqual(["echo", "$(ls -la /tmp)"]);
-        });
+    describe("escaping", () => {
+        runParseTests([
+            { desc: "escaped space", input: "echo hello\\ world", expected: [["echo", "hello world"]] },
+            { desc: "multiple escaped spaces", input: "echo hello\\ \\ world", expected: [["echo", "hello  world"]] },
+            { desc: "escaped tab", input: "echo hello\\\tworld", expected: [["echo", "hello\tworld"]] },
+            { desc: "escaped backslash", input: "echo hello\\\\world", expected: [["echo", "hello\\world"]] },
+        ]);
     });
 
-    describe("process substitution", () => {
-        it("should parse process substitution <()", () => {
-            const result = parseBashArgs("diff <(cat a.txt) <(cat b.txt)");
-            expect(result).toEqual(["diff", "<(cat a.txt)", "<(cat b.txt)"]);
-        });
-
-        it("should parse process substitution >()", () => {
-            const result = parseBashArgs("tee >(cat)");
-            expect(result).toEqual(["tee", ">(cat)"]);
-        });
-
-        it("should parse process substitution with spaces inside", () => {
-            const result = parseBashArgs("diff <(cat a b) >(echo x y)");
-            expect(result).toEqual(["diff", "<(cat a b)", ">(echo x y)"]);
-        });
+    describe("line continuations", () => {
+        runParseTests([
+            { desc: "removes backslash-newline", input: "echo hello \\\nworld", expected: [["echo", "hello", "world"]] },
+            { desc: "multiple continuations", input: "echo \\\nhello \\\nworld", expected: [["echo", "hello", "world"]] },
+            { desc: "backslash-newline inside double quotes (removed)", input: 'echo "hello\\\nworld"', expected: [["echo", "helloworld"]] },
+            { desc: "backslash-newline inside single quotes (preserved)", input: "echo 'hello\\\nworld'", expected: [["echo", "hello\\\nworld"]] },
+            { desc: "continuation at start", input: "\\\necho hello", expected: [["echo", "hello"]] },
+            { desc: "continuation at end", input: "echo hello\\\n", expected: [["echo", "hello"]] },
+        ]);
     });
 
-    describe("command chaining", () => {
-        it("should parse && chaining", () => {
-            const result = parseBashArgs("cat file.txt && rm file.txt");
-            expect(result).toEqual(["cat", "file.txt", "&&", "rm", "file.txt"]);
-        });
-
-        it("should parse || chaining", () => {
-            const result = parseBashArgs("cat file.txt || echo failed");
-            expect(result).toEqual(["cat", "file.txt", "||", "echo", "failed"]);
-        });
-
-        it("should parse ; chaining", () => {
-            const result = parseBashArgs("cd /tmp; ls -la");
-            expect(result).toEqual(["cd", "/tmp", ";", "ls", "-la"]);
-        });
-
-        it("should parse | (pipe)", () => {
-            const result = parseBashArgs("cat file.txt | grep foo");
-            expect(result).toEqual(["cat", "file.txt", "|", "grep", "foo"]);
-        });
-
-        it("should parse multiple chain operators", () => {
-            const result = parseBashArgs("a && b || c; d | e");
-            expect(result).toEqual(["a", "&&", "b", "||", "c", ";", "d", "|", "e"]);
-        });
-
-        it("should parse chain operators without spaces", () => {
-            const result = parseBashArgs("a&&b||c;d|e");
-            expect(result).toEqual(["a", "&&", "b", "||", "c", ";", "d", "|", "e"]);
-        });
+    describe("operators", () => {
+        runParseTests([
+            { desc: "&& (and)", input: "a && b", expected: [["a", "&&", "b"]] },
+            { desc: "|| (or)", input: "a || b", expected: [["a", "||", "b"]] },
+            { desc: "| (pipe)", input: "cat file | grep foo", expected: [["cat", "file", "|", "grep", "foo"]] },
+            { desc: "; (sequential)", input: "cd /tmp; ls", expected: [["cd", "/tmp", ";", "ls"]] },
+            { desc: "& (background)", input: "sleep 1 &", expected: [["sleep", "1", "&"]] },
+            { desc: "operators without spaces", input: "a&&b||c|d;e&f", expected: [["a", "&&", "b", "||", "c", "|", "d", ";", "e", "&", "f"]] },
+        ]);
     });
 
     describe("redirections", () => {
-        it("should parse output redirection", () => {
-            const result = parseBashArgs("cat file.txt > output.txt");
-            expect(result).toEqual(["cat", "file.txt", ">", "output.txt"]);
-        });
+        runParseTests([
+            { desc: "output >", input: "cat file > out", expected: [["cat", "file", ">", "out"]] },
+            { desc: "append >>", input: "cat file >> out", expected: [["cat", "file", ">>", "out"]] },
+            { desc: "input <", input: "cat < in", expected: [["cat", "<", "in"]] },
+            { desc: "stderr 2>", input: "cmd 2> err", expected: [["cmd", "2>", "err"]] },
+            { desc: "stderr append 2>>", input: "cmd 2>> err", expected: [["cmd", "2>>", "err"]] },
+            { desc: "stderr to stdout 2>&1", input: "cmd 2>&1", expected: [["cmd", "2>&1"]] },
+        ]);
+    });
 
-        it("should parse append redirection", () => {
-            const result = parseBashArgs("cat file.txt >> output.txt");
-            expect(result).toEqual(["cat", "file.txt", ">>", "output.txt"]);
-        });
+    describe("subshells", () => {
+        runParseTests([
+            { desc: "$(...) subshell", input: "echo $(pwd)", expected: [["echo", "$(pwd)"]] },
+            { desc: "backtick subshell", input: "echo `pwd`", expected: [["echo", "`pwd`"]] },
+            { desc: "nested subshells", input: "echo $(cat $(echo file))", expected: [["echo", "$(cat $(echo file))"]] },
+            { desc: "subshell with operators inside", input: "echo $(cat f | grep x)", expected: [["echo", "$(cat f | grep x)"]] },
+            { desc: "empty subshell", input: "echo $()", expected: [["echo", "$()"]] },
+            { desc: "unclosed subshell", input: "echo $(hello", expected: [["echo", "$(hello"]] },
+        ]);
+    });
 
-        it("should parse input redirection", () => {
-            const result = parseBashArgs("cat < input.txt");
-            expect(result).toEqual(["cat", "<", "input.txt"]);
-        });
+    describe("process substitution", () => {
+        runParseTests([
+            { desc: "<() substitution", input: "diff <(cat a) <(cat b)", expected: [["diff", "<(cat a)", "<(cat b)"]] },
+            { desc: ">() substitution", input: "tee >(cat)", expected: [["tee", ">(cat)"]] },
+            { desc: "empty substitution", input: "cat <()", expected: [["cat", "<()"]] },
+        ]);
+    });
 
-        it("should parse stderr redirection", () => {
-            const result = parseBashArgs("cat file.txt 2> errors.txt");
-            expect(result).toEqual(["cat", "file.txt", "2>", "errors.txt"]);
-        });
+    describe("heredocs", () => {
+        runParseTests([
+            { desc: "heredoc with content", input: "cat <<EOF\nhello\nEOF", expected: [["cat", "<<", "EOF", "EOF"]] },
+            { desc: "heredoc without content (no newline)", input: "cat <<EOF", expected: [["cat", "<<", "EOF"]] },
+            { desc: "heredoc with space before delimiter", input: "cat << EOF", expected: [["cat", "<<", "EOF"]] },
+            { desc: "<<- (tab-stripped heredoc)", input: "cat <<-EOF\n\tcontent\nEOF", expected: [["cat", "<<-", "EOF", "EOF"]] },
+            { desc: "heredoc followed by more commands", input: "cat <<EOF\ncontent\nEOF\necho done", expected: [["cat", "<<", "EOF", "EOF"], ["echo", "done"]] },
+            { desc: "unclosed heredoc", input: "cat <<EOF\ncontent without end", expected: [["cat", "<<", "EOF"]] },
+            { desc: "heredoc with empty content", input: "cat <<EOF\nEOF", expected: [["cat", "<<", "EOF", "EOF"]] },
+            { desc: "heredoc with delimiter-like text in content", input: "cat <<EOF\nnot EOF but not alone\nEOF", expected: [["cat", "<<", "EOF", "EOF"]] },
+        ]);
+    });
 
-        it("should parse stderr to stdout", () => {
-            const result = parseBashArgs("cat file.txt 2>&1");
-            expect(result).toEqual(["cat", "file.txt", "2>&1"]);
-        });
+    describe("special characters and edge cases", () => {
+        runParseTests([
+            { desc: "dollar sign literally", input: "echo $HOME", expected: [["echo", "$HOME"]] },
+            { desc: "glob patterns literally", input: "ls *.txt", expected: [["ls", "*.txt"]] },
+            { desc: "brace expansion literally", input: "echo {a,b}", expected: [["echo", "{a,b}"]] },
+            { desc: "tilde literally", input: "cat ~/file", expected: [["cat", "~/file"]] },
+            { desc: "equals sign", input: "cmd --key=value", expected: [["cmd", "--key=value"]] },
+            { desc: "dashes", input: "cmd -a --bc", expected: [["cmd", "-a", "--bc"]] },
+            { desc: "paths with slashes", input: "cat /path/to/file", expected: [["cat", "/path/to/file"]] },
+            { desc: "Unicode", input: "echo 你好 🎉", expected: [["echo", "你好", "🎉"]] },
+        ]);
 
-        it("should parse combined redirections", () => {
-            const result = parseBashArgs("cat file.txt > out.txt 2>&1");
-            expect(result).toEqual(["cat", "file.txt", ">", "out.txt", "2>&1"]);
+        it("handles very long arguments", () => {
+            const long = "a".repeat(1000);
+            expect(parseBash(`echo ${long}`)).toEqual([["echo", long]]);
+        });
+    });
+});
+
+interface BoolTest {
+    desc: string;
+    input: string;
+    expected: boolean;
+}
+
+interface StringTest {
+    desc: string;
+    input: string;
+    expected: string;
+}
+
+describe("helper functions", () => {
+    describe("isHeredocOperator", () => {
+        const tests: BoolTest[] = [
+            { desc: "<< is heredoc operator", input: "<<", expected: true },
+            { desc: "<<- is heredoc operator", input: "<<-", expected: true },
+            { desc: "< is not heredoc operator", input: "<", expected: false },
+            { desc: ">>> is not heredoc operator", input: ">>>", expected: false },
+        ];
+        it.each(tests)("$desc", ({ input, expected }) => {
+            expect(isHeredocOperator(input)).toBe(expected);
         });
     });
 
-    describe("special characters", () => {
-        it("should handle literal dot in argument", () => {
-            const result = parseBashArgs("ls -la .");
-            expect(result).toEqual(["ls", "-la", "."]);
+    describe("isSubshell", () => {
+        const tests: BoolTest[] = [
+            { desc: "$(echo hi) is subshell", input: "$(echo hi)", expected: true },
+            { desc: "$(cat) is subshell", input: "$(cat)", expected: true },
+            { desc: "$() is subshell", input: "$()", expected: true },
+            { desc: "`echo hi` is subshell", input: "`echo hi`", expected: true },
+            { desc: "`` is subshell", input: "``", expected: true },
+            { desc: "echo is not subshell", input: "echo", expected: false },
+            { desc: "$VAR is not subshell", input: "$VAR", expected: false },
+        ];
+        it.each(tests)("$desc", ({ input, expected }) => {
+            expect(isSubshell(input)).toBe(expected);
         });
+    });
 
-        it("should handle literal dollar sign in argument", () => {
-            const result = parseBashArgs("echo $HOME");
-            expect(result).toEqual(["echo", "$HOME"]);
+    describe("isProcessSubstitution", () => {
+        const tests: BoolTest[] = [
+            { desc: "<(cat a) is process substitution", input: "<(cat a)", expected: true },
+            { desc: ">(tee) is process substitution", input: ">(tee)", expected: true },
+            { desc: "<() is process substitution", input: "<()", expected: true },
+            { desc: "(cat a) is not process substitution", input: "(cat a)", expected: false },
+            { desc: "echo is not process substitution", input: "echo", expected: false },
+        ];
+        it.each(tests)("$desc", ({ input, expected }) => {
+            expect(isProcessSubstitution(input)).toBe(expected);
         });
+    });
 
-        it("should handle literal pipe in argument", () => {
-            const result = parseBashArgs("cmd | other");
-            expect(result).toEqual(["cmd", "|", "other"]);
-        });
-
-        it("should handle literal backslash in argument", () => {
-            const result = parseBashArgs("path\\ to\\ file");
-            expect(result).toEqual(["path to file"]);
+    describe("getSubshellContent", () => {
+        const tests: StringTest[] = [
+            { desc: "extracts from $(...)", input: "$(echo hi)", expected: "echo hi" },
+            { desc: "extracts from backticks", input: "`echo hi`", expected: "echo hi" },
+            { desc: "extracts from <()", input: "<(cat a)", expected: "cat a" },
+            { desc: "extracts from >()", input: ">(tee)", expected: "tee" },
+            { desc: "returns input unchanged for non-subshells", input: "echo", expected: "echo" },
+        ];
+        it.each(tests)("$desc", ({ input, expected }) => {
+            expect(getSubshellContent(input)).toBe(expected);
         });
     });
 });
