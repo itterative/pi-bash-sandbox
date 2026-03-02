@@ -19,12 +19,21 @@ Bash sandboxing for pi - a secure way to execute shell commands with configurabl
 
 This extension integrates with the pi coding agent to intercept and control bash command execution. When the agent attempts to run a bash command, you'll be prompted based on your permission settings.
 
+### Commands
+
+- `/bash-sandbox-config` - Display the currently loaded sandbox configuration
+- `/bash-sandbox-audit` - Analyze commands you've allowed and suggest permission patterns
+  - `/bash-sandbox-audit analyze` - Use the model to analyze commands and suggest patterns (default)
+  - `/bash-sandbox-audit list` - List recent commands that were tracked for auditing
+
 ### Configuration
 
 Configuration is stored in JSON files at:
 
 - Project level: `.pi/bash-sandbox-config.json` (relative to working directory)
 - Global level: `~/.pi/bash-sandbox-config.json`
+
+The project-level config is merged with the global config, with project settings taking precedence. This allows you to have a base configuration globally and override specific settings per project.
 
 #### Example Configuration
 
@@ -52,6 +61,10 @@ Configuration is stored in JSON files at:
         "rm -rf *": "deny",
         "find * | grep *": "allow",
         "find * -exec *": "ask"
+    },
+    "audit": {
+        "provider": "openai",
+        "model": "gpt-4o-mini"
     }
 }
 ```
@@ -75,6 +88,13 @@ Configuration is stored in JSON files at:
 - `"allow"` - Include this variable from parent
 - `"deny"` - Block this variable
 - By default, the following envs are set: PWD, HOME, PATH, SHELL, TERM, USER
+
+**`audit`** (optional)
+
+- Configuration for the audit command's model analysis
+- `provider` - The AI provider to use (e.g., "openai", "anthropic")
+- `model` - The model ID to use (e.g., "gpt-4o", "claude-3-5-sonnet")
+- If not specified, the current session model is used
 
 **`permissions`** (required)
 
