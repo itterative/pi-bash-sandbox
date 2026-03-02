@@ -1,16 +1,24 @@
+import os from "node:os";
 import config, { type SandboxConfig } from "../common/config";
+
+export interface SandboxOptions {
+    env?: NodeJS.ProcessEnv;
+    cwd?: string;
+    config?: SandboxConfig;
+}
 
 function escapeArg(arg: string): string {
     return `'${arg.replace(/'/g, "'\"'\"'")}'`;
 }
 
-function escapeArgWithSubstitution(arg: string): string {
-    arg = arg.replace(/^~/, process.env.HOME || "");
+function escapeArgWithSubstitution(arg: string, homeDir: string): string {
+    arg = arg.replace(/^~/, homeDir);
     return `'${arg.replace(/'/g, "'\"'\"'")}'`;
 }
 
-function buildEnvCmd(sandboxConfig: SandboxConfig): string[] {
+function buildEnvCmd(sandboxConfig: SandboxConfig, options?: SandboxOptions): string[] {
     const cmd: string[] = [];
+    const env = options?.env ?? process.env;
 
     const setEnvVars = new Set<string>();
     const defaultEnvVars = ["PWD", "HOME", "PATH", "SHELL", "TERM", "USER"];
@@ -28,7 +36,7 @@ function buildEnvCmd(sandboxConfig: SandboxConfig): string[] {
 
     // then go through the allowed envs
     if (inheritEnvConfig) {
-        for (const [key, value] of Object.entries(process.env)) {
+        for (const [key, value] of Object.entries(env)) {
             if (value === undefined) {
                 continue;
             }
@@ -37,12 +45,11 @@ function buildEnvCmd(sandboxConfig: SandboxConfig): string[] {
                 continue;
             }
 
-            setEnvVars.add(key);
-
             if (inheritEnvConfig[key] !== "allow") {
                 continue;
             }
 
+            setEnvVars.add(key);
             cmd.push("--setenv", key, escapeArg(value));
         }
     }
@@ -53,7 +60,7 @@ function buildEnvCmd(sandboxConfig: SandboxConfig): string[] {
             continue;
         }
 
-        const value = process.env[key];
+        const value = env[key];
         if (value === undefined) {
             continue;
         }
@@ -65,8 +72,9 @@ function buildEnvCmd(sandboxConfig: SandboxConfig): string[] {
     return cmd;
 }
 
-function buildMountCmd(): string[] {
+function buildMountCmd(options?: SandboxOptions): string[] {
     const cmd: string[] = [];
+    const env = options?.env ?? process.env;
 
     cmd.push("--proc", "/proc");
     cmd.push("--dev", "/dev");
@@ -98,7 +106,7 @@ function buildMountCmd(): string[] {
         cmd.push("--ro-bind-try", escapeArg(file), escapeArg(file));
     }
 
-    const homeDir = process.env.HOME;
+    const homeDir = env.HOME ?? os.homedir();
     if (homeDir) {
         for (const file of homeMounts) {
             cmd.push(
@@ -112,35 +120,39 @@ function buildMountCmd(): string[] {
     return cmd;
 }
 
-export default function sandbox(bwrap: string, command: string): string {
+export default function sandbox(bwrap: string, command: string, options?: SandboxOptions): string {
     const cmd: string[] = [bwrap];
+    const env = options?.env ?? process.env;
+    const cwd = options?.cwd ?? process.cwd();
+    const homeDir = env.HOME ?? os.homedir();
 
-    const sandboxConfig = config.current ?? config.default;
+    const sandboxConfig = options?.config ?? config.current ?? config.default;
 
     cmd.push("--clearenv");
 
-    const cwd = escapeArg(process.cwd());
-    cmd.push("--bind", cwd, cwd);
+    cmd.push("--bind", escapeArg(cwd), escapeArg(cwd));
 
-    const envCmd = buildEnvCmd(sandboxConfig);
+    const envCmd = buildEnvCmd(sandboxConfig, { env, cwd });
     cmd.push(...envCmd);
 
     for (const [source, mode] of Object.entries(sandboxConfig.sandbox?.mounts ?? {})) {
         const dest = source;
 
         if (mode === "readonly") {
-            cmd.push("--ro-bind-try", escapeArgWithSubstitution(source), escapeArgWithSubstitution(dest));
+            cmd.push("--ro-bind-try", escapeArgWithSubstitution(source, homeDir), escapeArgWithSubstitution(dest, homeDir));
         } else if (mode === "readwrite") {
-            cmd.push("--bind-try", escapeArgWithSubstitution(source), escapeArgWithSubstitution(dest));
+            cmd.push("--bind-try", escapeArgWithSubstitution(source, homeDir), escapeArgWithSubstitution(dest, homeDir));
         }
     }
 
     // Add system and home mounts
-    const mountCmd = buildMountCmd();
+    const mountCmd = buildMountCmd(options);
     cmd.push(...mountCmd);
 
+    const shell = env.SHELL ?? "sh";
+
     cmd.push("--die-with-parent");
-    cmd.push("--", "bash", "-c", escapeArg(command));
+    cmd.push("--", shell, "-c", escapeArg(command));
 
     return cmd.join(" ");
 }
