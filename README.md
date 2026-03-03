@@ -7,8 +7,8 @@ Bash sandboxing for pi - a secure way to execute shell commands with configurabl
 - **Sandboxed command execution** using [bubblewrap](https://github.com/containers/bubblewrap)
 - **Configurable permissions** - allow, deny, ask, or sandbox specific commands
 - **Filesystem isolation** - bind-mounted directories with read-only or read-write access
-- **Pattern-based matching** - use wildcards to match command patterns (last-match takes precedence)
-- **Configurable at multiple levels** - project-specific or global configuration
+- **Pattern-based matching** - use wildcards to match command patterns
+- **User notes** - add context to your decisions that the agent can see
 
 ## Requirements
 
@@ -19,356 +19,46 @@ Bash sandboxing for pi - a secure way to execute shell commands with configurabl
 
 ## Usage
 
-This extension integrates with the pi coding agent to intercept and control bash command execution. When the agent attempts to run a bash command, you'll be prompted based on your permission settings.
+When the agent attempts to run a bash command, you'll be prompted based on your permission settings:
+
+- **Yes (sandbox)** - Run inside a bubblewrap sandbox
+- **Yes** - Run directly without sandboxing
+- **No** - Block the command
+
+Press **Tab** on an option to add an optional note explaining your decision.
 
 ### Commands
 
-- `/bash-sandbox-config` - Display the currently loaded sandbox configuration
-    - `/bash-sandbox-config show` - Display the current configuration (default)
-    - `/bash-sandbox-config reload` - Reload the configuration from disk
-- `/bash-sandbox-audit` - Analyze commands you've allowed and suggest permission patterns
-    - `/bash-sandbox-audit analyze` - Use the model to analyze commands and suggest patterns (default)
-    - `/bash-sandbox-audit list` - List recent commands that were tracked for auditing
+- `/bash-sandbox-config` - Display or reload the sandbox configuration
+- `/bash-sandbox-audit` - Analyze allowed commands and suggest permission patterns
 
-**How audit tracking works:**
+## Configuration
 
-When you allow a command (via `"ask"` prompt), the extension tracks it for later analysis. Commands are **not** automatically added to your configuration. Instead:
+Configuration is stored in JSON files:
 
-1. Allowed commands are recorded during the session
-2. Run `/bash-sandbox-audit analyze` to have the model review your commands and suggest patterns
-3. Select which patterns to add from the multi-select UI
-4. Confirm to save patterns to `.pi/bash-sandbox-config.json`
-
-This lets you review suggestions before committing them to your configuration.
-
-### Configuration
-
-Configuration is stored in JSON files at:
-
-- Project level: `.pi/bash-sandbox-config.json` (relative to working directory)
+- Project level: `.pi/bash-sandbox-config.json`
 - Global level: `~/.pi/bash-sandbox-config.json`
 
-The project-level config is merged with the global config, with project settings taking precedence. This allows you to have a base configuration globally and override specific settings per project.
-
-*When no configuration exists, all commands default to `"ask"`, prompting you for each command.*
-
-#### Example Configuration
+### Quick Example
 
 ```json
 {
     "sandbox": {
         "mounts": {
             "/home/user/projects": "readwrite"
-        },
-        "env": {
-            "API_KEY": "secret123"
-        },
-        "inheritEnv": {
-            "MY_SECRET": "allow",
-            "DEBUG": "deny"
         }
     },
     "permissions": {
         "cd *": "allow",
         "ls *": "allow",
-        "cat *": "allow",
-        "sudo *": "deny",
-        "rm -rf *": "deny",
-        "find * | grep *": "allow",
-        "find * -exec *": "ask"
-    },
-    "audit": {
-        "provider": "openai",
-        "model": "gpt-4o-mini"
-    }
-}
-```
-
-#### Configuration Fields
-
-**`sandbox.mounts`** (optional)
-
-- Additional filesystem paths to bind into the sandbox (these are **additive** to the default mounts)
-- `"readonly"` - Bind as read-only
-- `"readwrite"` - Bind with read-write access
-- Paths use `--ro-bind-try` / `--bind-try`, so missing paths are silently skipped
-
-**Default Mounts**
-
-Every sandbox includes these automatic mounts:
-
-| Path                                                                | Mode            | Notes                   |
-| ------------------------------------------------------------------- | --------------- | ----------------------- |
-| `/usr`, `/bin`, `/lib`, `/lib64`, `/etc`                            | read-only       | System directories      |
-| `/proc`                                                             | read-write      | Required for many tools |
-| `/dev`                                                              | read-write      | Device access           |
-| Current working directory                                           | read-write      | Project root            |
-| `/etc/bashrc`, `/etc/bash.bashrc`, `/etc/profile`, `/etc/profile.d` | read-only (try) | Shell configs           |
-| `/etc/bash_completion`, `/usr/share/bash-completion`                | read-only (try) | Bash completion         |
-| `~/.bashrc`, `~/.bash_profile`, `~/.bash_history`                   | read-only (try) | User shell configs      |
-| `~/.local`, `~/.config`                                             | read-only (try) | User config directories |
-
-**`sandbox.env`** (optional)
-
-- Custom environment variables to set in the sandbox
-- These do NOT inherit from the parent process
-
-**`sandbox.inheritEnv`** (optional)
-
-- Filter for which existing environment variables to pass through from the parent process
-- `"allow"` - Include this variable from parent
-- `"deny"` - Block this variable (even from defaults below)
-
-**How it works:**
-
-1. Custom `sandbox.env` variables are always set first
-2. If `inheritEnv` is defined, only variables explicitly set to `"allow"` are passed from the parent
-3. Default environment variables are set last (if not already set): `PWD`, `HOME`, `PATH`, `SHELL`, `TERM`, `USER`
-
-**Important:** If you define `inheritEnv`, any environment variable not listed as `"allow"` will be blocked, with the exception of default environment variables. Use this to create a minimal environment.
-
-**`audit`** (optional)
-
-- Configuration for the audit command's model analysis
-- `provider` - The AI provider to use (e.g., "openai", "anthropic")
-- `model` - The model ID to use (e.g., "gpt-4o", "claude-3-5-sonnet")
-- If not specified, the current session model is used
-
-**`permissions`** (required)
-
-- Command permissions (see below)
-
-### Permission Patterns
-
-Permissions use wildcard patterns where `*` matches zero or more characters within an argument.
-
-Patterns are matched on last-match basis (similar to OpenCode). This means that you should define your catch-all at the top, and be more specific as you add permissions.
-
-#### Permission Levels
-
-- `allow` - Execute command directly without sandboxing
-- `allow:sandbox` - Execute command within a bubblewrap sandbox
-- `deny` - Block the command entirely
-- `ask` (default) - Ask permission for each command
-
-When a command matches `ask` (or has no matching rule), you'll see a prompt with:
-
-- **Yes (sandbox)** - Run the command inside a bubblewrap sandbox
-- **Yes** - Run the command directly without sandboxing
-- **No** - Block the command
-
-#### User Notes
-
-When prompted, you can add an optional message to explain your decision:
-
-- Press **Tab** on an option to enter inline edit mode
-- Type your message (e.g., "trusted build tool" or "too risky")
-- Press **Enter** to confirm with the message
-
-Your note is shared with the agent to provide context about your preferences:
-
-- **Blocked commands**: The note appears in the block reason
-- **Allowed commands**: The note is prefixed with `[User note: ...]` at the start of the command output
-- **Audit log**: Notes are stored with allowed commands for later review
-
-```json
-{
-    "permissions": {
-        "npm test": "allow",
-        "npm test *": "allow",
-        "npm run test:*": "allow",
-        "ls *": "allow",
-        "sudo *": "deny",
-        "docker *": "ask"
-    }
-}
-```
-
-#### Multi-Line Commands
-
-Commands separated by newlines are parsed as separate commands. The permission system evaluates each command independently and returns the **most restrictive** result:
-
-- If any command is `deny` → returns `deny`
-- If any command is `ask` → returns `ask`
-- Otherwise returns the most restrictive among `allow`/`allow:sandbox`
-
-**Example configuration:**
-
-```json
-{
-    "permissions": {
-        "echo *": "allow",
-        "ls *": "allow:sandbox",
-        "rm *": "deny"
-    }
-}
-```
-
-**All allowed → `allow`:**
-
-```bash
-echo hello
-echo world
-```
-
-**Mixed allow/allow:sandbox → `allow:sandbox`:**
-
-```bash
-echo hello
-ls -la
-```
-
-**One denied → `deny`:**
-
-```bash
-echo hello
-rm file
-```
-
-**Unknown command → `ask`:**
-
-```bash
-ls -la
-sudo apt update
-```
-
-#### Line Continuations
-
-Lines ending with `\` are joined together before parsing:
-
-**Matches `echo hello world`:**
-
-```bash
-echo hello \
-world
-```
-
-**Does not match `echo hello world`:**
-
-```bash
-echo hello \
-&& rm file
-```
-
-This parses as `echo hello && rm file` (a chained command).
-
-#### Advanced Pattern Matching
-
-##### Wildcards
-
-The `*` wildcard matches zero or more characters **within a single argument**. When `*` appears as its own argument in the pattern, it matches one or more command arguments:
-
-```json
-{
-    "permissions": {
-        "npm run test:*": "allow",
         "npm run *": "allow",
-        "git * *": "allow"
+        "sudo *": "deny",
+        "rm -rf *": "deny"
     }
 }
 ```
 
-| Pattern          | Command                    | Match                      |
-| ---------------- | -------------------------- | -------------------------- |
-| `npm run test:*` | `npm run test:unit`        | ✅                         |
-| `npm run test:*` | `npm run test:integration` | ✅                         |
-| `npm run *`      | `npm run build`            | ✅                         |
-| `npm run *`      | `npm run dev server`       | ✅ (matches multiple args) |
-| `git commit *`   | `git commit -m "message"`  | ✅                         |
+## Documentation
 
-##### Heredocs
-
-Heredoc syntax (`<<`, `<<-`) is fully supported. The delimiter name is flexible - any delimiter in the command will match any delimiter in the pattern:
-
-```json
-{
-    "permissions": {
-        "cat << EOF": "allow",
-        "git commit << *": "allow"
-    }
-}
-```
-
-| Pattern              | Command                            | Match                   |
-| -------------------- | ---------------------------------- | ----------------------- |
-| `cat << EOF`         | `cat <<EOF\ncontent\nEOF`          | ✅                      |
-| `cat << EOF`         | `cat <<MYDELIM\ncontent\nMYDELIM`  | ✅ (any delimiter)      |
-| `cat <<- EOF`        | `cat <<-EOF\ncontent\nEOF`         | ✅                      |
-| `cat << EOF`         | `cat <<-EOF\n...`                  | ❌ (different operator)  |
-| `cat << EOF \| bash` | `cat << EOF \| bash\ncontent\nEOF` | ✅                      |
-| `cat << EOF \| grep` | `cat << EOF \| bash\ncontent\nEOF` | ❌ (different command)   |
-
-##### Subshells
-
-Subshells (`$(...)` and `` `...` ``) are parsed and matched recursively:
-
-```json
-{
-    "permissions": {
-        "echo $(echo hello)": "allow",
-        "echo $(echo *)": "allow",
-        "echo $(cat *)": "allow"
-    }
-}
-```
-
-| Pattern                 | Command                        | Match                        |
-| ----------------------- | ------------------------------ | ---------------------------- |
-| `echo $(echo *)`        | `echo $(echo hello)`           | ✅                           |
-| `echo $(echo *)`        | `echo $(echo world)`           | ✅                           |
-| `echo $(cat *)`         | `echo $(cat file.txt)`         | ✅                           |
-| `echo $(cat *)`         | `echo $(echo file.txt)`        | ❌ (different inner command)  |
-| `echo $(cat $(echo *))` | `echo $(cat $(echo file.txt))` | ✅ (nested)                  |
-
-##### Process Substitution
-
-Process substitution (`<(...)` and `>(...)`) is also supported:
-
-```json
-{
-    "permissions": {
-        "diff <(cat *) <(cat *)": "allow"
-    }
-}
-```
-
-| Pattern                  | Command                          | Match |
-| ------------------------ | -------------------------------- | ----- |
-| `diff <(cat *) <(cat *)` | `diff <(cat a.txt) <(cat b.txt)` | ✅    |
-
-##### Command Chaining
-
-Operators like `&&`, `||`, `|`, and `;` are parsed as separate arguments:
-
-```json
-{
-    "permissions": {
-        "cat * && rm *": "allow",
-        "cat * | grep *": "allow"
-    }
-}
-```
-
-| Pattern           | Command                       | Match               |
-| ----------------- | ----------------------------- | ------------------- |
-| `cat * && rm *`   | `cat file.txt && rm file.txt` | ✅                  |
-| `cat *`           | `cat file.txt && rm file.txt` | ❌ (has extra args)  |
-| `cat * \| grep *` | `cat file.txt \| grep foo`    | ✅                  |
-
-##### Redirections
-
-Redirections (`>`, `>>`, `<`, `2>`, `2>&1`) are parsed as separate arguments:
-
-```json
-{
-    "permissions": {
-        "cat * > *": "allow",
-        "cat * >> *": "allow"
-    }
-}
-```
-
-| Pattern     | Command                      | Match                   |
-| ----------- | ---------------------------- | ----------------------- |
-| `cat * > *` | `cat file.txt > output.txt`  | ✅                      |
-| `cat * > *` | `cat file.txt >> output.txt` | ❌ (different operator)  |
+- [Configuration](./docs/configuration.md) - Full configuration options, sandbox mounts, environment variables
+- [Permissions](./docs/permissions.md) - Permission levels, pattern matching, advanced syntax
