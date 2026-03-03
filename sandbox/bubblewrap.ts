@@ -92,6 +92,7 @@ function buildMountCmd(options?: SandboxOptions): string[] {
         "/etc/profile.d",
         "/etc/bash_completion",
         "/usr/share/bash-completion",
+        "/run/systemd/resolve",
     ];
 
     const homeMounts = [

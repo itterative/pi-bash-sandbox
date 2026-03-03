@@ -59,6 +59,7 @@ Every sandbox includes these automatic mounts:
 | `/usr`, `/bin`, `/lib`, `/lib64`, `/etc`                            | read-only       | System directories      |
 | `/proc`                                                             | read-write      | Required for many tools |
 | `/dev`                                                              | read-write      | Device access           |
+| `/run/systemd/resolve`                                              | read-only (try) | DNS resolution          |
 | Current working directory                                           | read-write      | Project root            |
 | `/etc/bashrc`, `/etc/bash.bashrc`, `/etc/profile`, `/etc/profile.d` | read-only (try) | Shell configs           |
 | `/etc/bash_completion`, `/usr/share/bash-completion`                | read-only (try) | Bash completion         |
