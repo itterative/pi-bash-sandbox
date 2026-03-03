@@ -157,6 +157,20 @@ When a command matches `ask` (or has no matching rule), you'll see a prompt with
 - **Yes** - Run the command directly without sandboxing
 - **No** - Block the command
 
+#### User Notes
+
+When prompted, you can add an optional message to explain your decision:
+
+- Press **Tab** on an option to enter inline edit mode
+- Type your message (e.g., "trusted build tool" or "too risky")
+- Press **Enter** to confirm with the message
+
+Your note is shared with the agent to provide context about your preferences:
+
+- **Blocked commands**: The note appears in the block reason
+- **Allowed commands**: The note is prefixed with `[User note: ...]` at the start of the command output
+- **Audit log**: Notes are stored with allowed commands for later review
+
 ```json
 {
     "permissions": {
