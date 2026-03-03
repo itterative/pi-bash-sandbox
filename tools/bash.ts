@@ -1,6 +1,6 @@
 import { lookpath } from "lookpath";
 
-import { isToolCallEventType } from "@mariozechner/pi-coding-agent";
+import { isToolCallEventType, isBashToolResult } from "@mariozechner/pi-coding-agent";
 import type {
     ExtensionAPI,
     BashToolInput,
@@ -8,8 +8,10 @@ import type {
 
 import sandboxConfig from "../common/config";
 import { ALLOWED_COMMAND_ENTRY_TYPE, type AllowedCommandEntry } from "../common/audit";
+import { indentLines } from "../common/text";
 import sandbox from "../sandbox/bubblewrap";
 import getPermission, { Permission } from "../sandbox/permissions";
+import { selectWithMessage, type SelectMessageItem } from "../components/select-with-message";
 
 // FIXME: use the import instead of this (where is it exported from though? ide complains of @mariozechner/pi-coding-agent/core/extensions)
 interface ToolCallEventResult {
@@ -56,6 +58,24 @@ export default function registerBashToolHook(pi: ExtensionAPI) {
         }
     });
 
+    // Add system prompt instructions about user notes
+    pi.on("before_agent_start", async (event) => {
+        return {
+            systemPrompt:
+                event.systemPrompt +
+`
+
+## Bash Sandbox User Notes
+
+When requesting to run bash commands, the user may attach a note explaining their decision. These notes appear:
+- For blocked commands: in the block reason
+- For allowed commands: prefixed with \`[User note: ...]\` at the start of the command output
+
+Pay attention to these notes as they provide context abot the user's preferences and concerns.
+`,
+        };
+    });
+
     if (!hasSupport) {
         return;
     }
@@ -73,17 +93,31 @@ export default function registerBashToolHook(pi: ExtensionAPI) {
         }
 
         if (permission === "ask") {
-            const result = await ctx.ui.select(
-                `Agent is trying to run: ${event.input.command}\n\nDo you allow this command?`,
-                hasSupport ? ["Yes (sandbox)", "Yes", "No"] : ["Yes", "No"],
+            const items: SelectMessageItem<Permission>[] = hasSupport
+                ? [
+                    { value: "allow:sandbox", label: "Yes (sandbox)", placeholder: "e.g., trusted build tool" },
+                    { value: "allow", label: "Yes", placeholder: "e.g., I've reviewed this command" },
+                    { value: "deny", label: "No", placeholder: "e.g., too risky" },
+                ]
+                : [
+                    { value: "allow", label: "Yes", placeholder: "e.g., I've reviewed this command" },
+                    { value: "deny", label: "No", placeholder: "e.g., too risky" },
+                ];
+
+            const result = await selectWithMessage(
+                {
+                    title: `pi-bash-sandbox: Agent is trying to run:\n\n${indentLines(event.input.command, { firstLinePrefix: "  " })}\n\nDo you allow this command?`,
+                    items,
+                },
+                ctx,
             );
 
-            if (result === "Yes (sandbox)") {
-                permission = "allow:sandbox";
-            } else if (result === "Yes") {
-                permission = "allow";
-            } else if (result === "No") {
-                permission = "deny";
+            if (result) {
+                permission = result.value;
+                // Attach message to input for retrieval in tool_result
+                if (result.message) {
+                    (event.input as any)._userMessage = result.message;
+                }
             } else {
                 permission = "deny";
             }
@@ -126,16 +160,21 @@ export default function registerBashToolHook(pi: ExtensionAPI) {
         }
 
         if (blocked) {
+            const userMessage = (event.input as any)._userMessage;
+            const baseReason = "Command execution blocked by user.";
+            const reason = userMessage ? `${baseReason} User message: ${userMessage}` : baseReason;
             return {
                 block: true,
-                reason: "Command execution blocked by user.",
+                reason,
             };
         }
 
         // Track allowed command for audit
+        const userMessage = (event.input as any)._userMessage;
         pi.appendEntry<AllowedCommandEntry>(ALLOWED_COMMAND_ENTRY_TYPE, {
             command: originalCommand,
             permission: sandboxed ? "allow:sandbox" : "allow",
+            ...(userMessage && { userMessage }),
         });
 
         if (sandboxed) {
@@ -148,5 +187,22 @@ export default function registerBashToolHook(pi: ExtensionAPI) {
         }
 
         return { block: false };
+    });
+
+    // Add user message to tool result for allowed commands
+    pi.on("tool_result", async (event, ctx) => {
+        if (!isBashToolResult(event)) return;
+
+        const userMessage = (event.input as any)._userMessage;
+        if (!userMessage) return;
+
+        // Prepend user message to the result content
+        const note = `[User note: ${userMessage}]`;
+        return {
+            content: [
+                { type: "text", text: note },
+                ...event.content,
+            ],
+        };
     });
 }
