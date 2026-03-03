@@ -43,6 +43,7 @@ Configuration is stored in JSON files:
 
 ```json
 {
+    "$schema": "https://raw.githubusercontent.com/itterative/pi-bash-sandbox/refs/heads/main/docs/schema.json",
     "sandbox": {
         "mounts": {
             "/home/user/projects": "readwrite"

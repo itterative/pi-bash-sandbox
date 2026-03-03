@@ -1,0 +1,100 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/itterative/pi-bash-sandbox/refs/heads/main/docs/schema.json",
+  "title": "pi-bash-sandbox Configuration",
+  "description": "Configuration for pi-bash-sandbox - secure bash command execution with bubblewrap sandboxing",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema reference for this configuration file"
+    },
+    "sandbox": {
+      "type": "object",
+      "description": "Sandbox configuration",
+      "properties": {
+        "mounts": {
+          "type": "object",
+          "description": "Additional filesystem paths to bind into the sandbox (additive to default mounts)",
+          "additionalProperties": {
+            "type": "string",
+            "enum": ["readonly", "readwrite"],
+            "description": "Access mode for the mount point"
+          }
+        },
+        "env": {
+          "type": "object",
+          "description": "Custom environment variables to set in the sandbox (does not inherit from parent process)",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "inheritEnv": {
+          "type": "object",
+          "description": "Filter for which existing environment variables to pass from the parent process",
+          "additionalProperties": {
+            "type": "string",
+            "enum": ["allow", "deny"],
+            "description": "Whether to allow or deny inheritance of this variable"
+          }
+        },
+        "homeMounts": {
+          "description": "Controls which files from the home directory are mounted into the sandbox",
+          "oneOf": [
+            {
+              "type": "boolean",
+              "description": "true for default mounts (.bashrc, .bash_profile, .local, .config), false to disable all"
+            },
+            {
+              "type": "array",
+              "description": "Custom array of home paths to mount (relative to ~)",
+              "items": {
+                "type": "string"
+              }
+            }
+          ]
+        }
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "description": "Command permission patterns (evaluated on last-match basis)",
+      "additionalProperties": {
+        "type": "string",
+        "enum": ["allow", "allow:sandbox", "deny", "ask"],
+        "description": "Permission level for matching commands"
+      }
+    },
+    "audit": {
+      "type": "object",
+      "description": "Configuration for the audit command's model analysis",
+      "properties": {
+        "provider": {
+          "type": "string",
+          "description": "The AI provider to use (e.g., 'openai', 'anthropic')"
+        },
+        "model": {
+          "type": "string",
+          "description": "The model ID to use (e.g., 'gpt-4o', 'claude-3-5-sonnet')"
+        }
+      }
+    }
+  },
+  "required": ["permissions"],
+  "examples": [
+    {
+      "sandbox": {
+        "mounts": {
+          "/home/user/projects": "readwrite"
+        },
+        "homeMounts": [".bashrc", ".config/git"]
+      },
+      "permissions": {
+        "cd *": "allow",
+        "ls *": "allow",
+        "npm run *": "allow",
+        "sudo *": "deny"
+      }
+    }
+  ]
+}

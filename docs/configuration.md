@@ -9,10 +9,21 @@ The project-level config is merged with the global config, with project settings
 
 _When no configuration exists, all commands default to `"ask"`, prompting you for each command._
 
+## JSON Schema
+
+For IDE autocomplete and validation, add a `$schema` field to your config:
+
+```json
+{
+    "$schema": "https://raw.githubusercontent.com/itterative/pi-bash-sandbox/refs/heads/main/docs/schema.json"
+}
+```
+
 ## Example Configuration
 
 ```json
 {
+    "$schema": "https://raw.githubusercontent.com/itterative/pi-bash-sandbox/refs/heads/main/docs/schema.json",
     "sandbox": {
         "mounts": {
             "/home/user/projects": "readwrite"

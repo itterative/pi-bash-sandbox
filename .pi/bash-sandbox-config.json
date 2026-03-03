@@ -1,4 +1,5 @@
 {
+  "$schema": "https://raw.githubusercontent.com/itterative/pi-bash-sandbox/refs/heads/main/docs/schema.json",
   "sandbox": {
     "mounts": {
       "~/.nvm": "readonly"
@@ -28,6 +29,10 @@
     "npx tsc *": "allow:sandbox",
     "cd */pi-bash-sandbox && npm run *": "allow:sandbox",
     "cd */pi-bash-sandbox && grep * *.ts": "allow:sandbox",
-    "grep * *.ts": "allow:sandbox"
+    "grep * *.ts": "allow:sandbox",
+    "cd */pi-bash-sandbox && npx tsc --noEmit *": "allow:sandbox",
+    "cd */pi-bash-sandbox && npx tsc --noEmit * | head *": "allow:sandbox",
+    "grep -r * --include=*.ts | grep -v *": "allow:sandbox",
+    "cd */pi-bash-sandbox && grep -r * --include=*.ts | grep -v *": "allow:sandbox"
   }
 }
