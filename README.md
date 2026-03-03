@@ -46,7 +46,8 @@ Configuration is stored in JSON files:
     "sandbox": {
         "mounts": {
             "/home/user/projects": "readwrite"
-        }
+        },
+        "homeMounts": [".bashrc", ".config/git"]
     },
     "permissions": {
         "cd *": "allow",

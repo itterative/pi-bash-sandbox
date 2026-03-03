@@ -10,6 +10,15 @@ function getGlobalConfigPath(): string | undefined {
 export type SandboxConfigMounts = Record<string, "readonly" | "readwrite">;
 export type SandboxConfigPermissions = Record<string, "deny" | "ask" | "allow" | "allow:sandbox">;
 export type SandboxConfigEnvFilter = Record<string, "allow" | "deny">;
+export type SandboxConfigHomeMounts = boolean | string[];
+
+// Default home directory mounts when homeMounts is true
+export const DEFAULT_HOME_MOUNTS = [
+    ".bashrc",
+    ".bash_profile",
+    ".local",
+    ".config",
+];
 
 export interface SandboxConfigAudit {
     provider?: string;
@@ -21,6 +30,7 @@ export interface SandboxConfig {
         mounts: SandboxConfigMounts;
         env?: Record<string, string>;  // custom env vars
         inheritEnv?: SandboxConfigEnvFilter;  // filter for existing env vars
+        homeMounts?: SandboxConfigHomeMounts;  // home directory mounts: true (default), false (none), or array of paths
     };
     permissions: SandboxConfigPermissions;
     audit?: SandboxConfigAudit;
@@ -43,6 +53,7 @@ function tryLoad(path: string): SandboxConfig | null {
                 mounts: data.sandbox?.mounts ?? {},
                 env: data.sandbox?.env,
                 inheritEnv: data.sandbox?.inheritEnv,
+                homeMounts: data.sandbox?.homeMounts,
             },
             permissions: data.permissions ?? {},
             audit: data.audit ? {
@@ -102,6 +113,39 @@ function mergeRecordsOrDefault<K extends string, V>(
     return merged;
 }
 
+function mergeHomeMounts(
+    base: SandboxConfigHomeMounts | undefined,
+    override: SandboxConfigHomeMounts | undefined
+): SandboxConfigHomeMounts | undefined {
+    // If override is false, disable home mounts entirely
+    if (override === false) {
+        return false;
+    }
+    
+    // If override is true or undefined, use base (which may be defaults)
+    if (override === true || override === undefined) {
+        return base;
+    }
+    
+    // If base is false or undefined, use override array
+    if (base === false || base === undefined) {
+        return override;
+    }
+    
+    // If both are arrays, merge them (base first, then override additions)
+    const baseArr = Array.isArray(base) ? base : [];
+    const overrideArr = Array.isArray(override) ? override : [];
+    
+    const merged = [...baseArr];
+    for (const item of overrideArr) {
+        if (!merged.includes(item)) {
+            merged.push(item);
+        }
+    }
+    
+    return merged;
+}
+
 function mergeConfigs(global: SandboxConfig | null, project: SandboxConfig | null): SandboxConfig {
     const base = global ?? defaultConfig();
 
@@ -114,6 +158,7 @@ function mergeConfigs(global: SandboxConfig | null, project: SandboxConfig | nul
             mounts: mergeRecordsOrDefault(base.sandbox.mounts, project.sandbox.mounts, {}),
             env: mergeRecords(base.sandbox.env, project.sandbox.env),
             inheritEnv: mergeRecords(base.sandbox.inheritEnv, project.sandbox.inheritEnv),
+            homeMounts: mergeHomeMounts(base.sandbox.homeMounts, project.sandbox.homeMounts),
         },
         permissions: mergeRecordsOrDefault(base.permissions, project.permissions, {}),
         audit: project.audit ?? base.audit,

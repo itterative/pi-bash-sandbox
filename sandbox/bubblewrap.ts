@@ -1,5 +1,5 @@
 import os from "node:os";
-import config, { type SandboxConfig } from "../common/config";
+import config, { type SandboxConfig, DEFAULT_HOME_MOUNTS, type SandboxConfigHomeMounts } from "../common/config";
 
 export interface SandboxOptions {
     env?: NodeJS.ProcessEnv;
@@ -76,15 +76,28 @@ function buildEnvCmd(sandboxConfig: SandboxConfig, options?: SandboxOptions): st
     return cmd;
 }
 
-function buildMountCmd(options?: SandboxOptions): string[] {
+function buildMountCmd(sandboxConfig: SandboxConfig, options?: SandboxOptions): string[] {
     const cmd: string[] = [];
     const env = options?.env ?? process.env;
 
     cmd.push("--proc", "/proc");
     cmd.push("--dev", "/dev");
 
-    const systemMounts = ["/usr", "/bin", "/lib", "/lib64", "/etc"];
+    // Minimal system mounts (no /etc - too much sensitive data)
+    const systemMounts = ["/usr", "/bin", "/lib", "/lib64"];
 
+    // Essential /etc files for networking and SSL
+    const etcMounts = [
+        "/etc/resolv.conf",
+        "/etc/hosts",
+        "/etc/ssl/certs",
+        "/etc/ca-certificates",
+        "/etc/pki",
+        "/etc/locale.conf",
+        "/etc/localtime",
+    ];
+
+    // Shell and bash completion
     const commonMounts = [
         "/etc/bashrc",
         "/etc/bash.bashrc",
@@ -95,30 +108,42 @@ function buildMountCmd(options?: SandboxOptions): string[] {
         "/run/systemd/resolve",
     ];
 
-    const homeMounts = [
-        ".bashrc",
-        ".bash_profile",
-        ".bash_history",
-        ".local",
-        ".config",
-    ];
-
     for (const mount of systemMounts) {
         cmd.push("--ro-bind", escapeArg(mount), escapeArg(mount));
+    }
+
+    for (const file of etcMounts) {
+        cmd.push("--ro-bind-try", escapeArg(file), escapeArg(file));
     }
 
     for (const file of commonMounts) {
         cmd.push("--ro-bind-try", escapeArg(file), escapeArg(file));
     }
 
-    const homeDir = env.HOME ?? os.homedir();
-    if (homeDir) {
-        for (const file of homeMounts) {
-            cmd.push(
-                "--ro-bind-try",
-                escapeArg(`${homeDir}/${file}`),
-                escapeArg(`${homeDir}/${file}`),
-            );
+    // Home mounts - configurable via homeMounts option
+    const homeMountsConfig = sandboxConfig.sandbox?.homeMounts;
+    if (homeMountsConfig !== false) {
+        const homeDir = env.HOME ?? os.homedir();
+        if (homeDir) {
+            let homeMounts: string[];
+            
+            if (homeMountsConfig === true || homeMountsConfig === undefined) {
+                // Use defaults
+                homeMounts = DEFAULT_HOME_MOUNTS;
+            } else if (Array.isArray(homeMountsConfig)) {
+                // Use custom list
+                homeMounts = homeMountsConfig;
+            } else {
+                homeMounts = [];
+            }
+
+            for (const file of homeMounts) {
+                cmd.push(
+                    "--ro-bind-try",
+                    escapeArg(`${homeDir}/${file}`),
+                    escapeArg(`${homeDir}/${file}`),
+                );
+            }
         }
     }
 
@@ -149,7 +174,7 @@ export default function sandbox(bwrap: string, command: string, options?: Sandbo
     }
 
     // Add system and home mounts
-    const mountCmd = buildMountCmd(options);
+    const mountCmd = buildMountCmd(sandboxConfig, options);
     cmd.push(...mountCmd);
 
     const shell = env.SHELL ?? "sh";

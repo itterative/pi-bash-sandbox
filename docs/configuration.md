@@ -7,7 +7,7 @@ Configuration is stored in JSON files at:
 
 The project-level config is merged with the global config, with project settings taking precedence. This allows you to have a base configuration globally and override specific settings per project.
 
-*When no configuration exists, all commands default to `"ask"`, prompting you for each command.*
+_When no configuration exists, all commands default to `"ask"`, prompting you for each command._
 
 ## Example Configuration
 
@@ -23,7 +23,8 @@ The project-level config is merged with the global config, with project settings
         "inheritEnv": {
             "MY_SECRET": "allow",
             "DEBUG": "deny"
-        }
+        },
+        "homeMounts": [".bashrc", ".config/git"]
     },
     "permissions": {
         "cd *": "allow",
@@ -56,15 +57,40 @@ Every sandbox includes these automatic mounts:
 
 | Path                                                                | Mode            | Notes                   |
 | ------------------------------------------------------------------- | --------------- | ----------------------- |
-| `/usr`, `/bin`, `/lib`, `/lib64`, `/etc`                            | read-only       | System directories      |
+| `/usr`, `/bin`, `/lib`, `/lib64`                                    | read-only       | System directories      |
 | `/proc`                                                             | read-write      | Required for many tools |
-| `/dev`                                                              | read-write      | Device access           |
-| `/run/systemd/resolve`                                              | read-only (try) | DNS resolution          |
+| `/dev`                                                              | read-write      | New devtmpfs (safe)     |
 | Current working directory                                           | read-write      | Project root            |
+| `/etc/resolv.conf`, `/etc/hosts`                                    | read-only (try) | DNS resolution          |
+| `/run/systemd/resolve`                                              | read-only (try) | Systemd DNS             |
+| `/etc/ssl/certs`, `/etc/ca-certificates`, `/etc/pki`                | read-only (try) | SSL/TLS certificates    |
+| `/etc/locale.conf`, `/etc/localtime`                                | read-only (try) | Locale/timezone         |
 | `/etc/bashrc`, `/etc/bash.bashrc`, `/etc/profile`, `/etc/profile.d` | read-only (try) | Shell configs           |
 | `/etc/bash_completion`, `/usr/share/bash-completion`                | read-only (try) | Bash completion         |
-| `~/.bashrc`, `~/.bash_profile`, `~/.bash_history`                   | read-only (try) | User shell configs      |
-| `~/.local`, `~/.config`                                             | read-only (try) | User config directories |
+| `~/.bashrc`, `~/.bash_profile` (configurable)                       | read-only (try) | User shell configs      |
+| `~/.local`, `~/.config` (configurable)                              | read-only (try) | User config directories |
+
+### `sandbox.homeMounts` (optional)
+
+Controls which files from the home directory are mounted into the sandbox:
+
+- `true` (default) - Mount default home files (`.bashrc`, `.bash_profile`, `.local`, `.config`)
+- `false` - Disable all home directory mounts
+- `["path1", "path2", ...]` - Custom array of home paths to mount (relative to `~`)
+
+**Merging behavior:** When both global and project configs define `homeMounts` as arrays, they are merged. Setting to `false` disables all home mounts entirely.
+
+**Security note:** Home directories often contain sensitive files like API keys, credentials, and SSH keys. Consider limiting what's exposed to the sandbox.
+
+**Example:**
+
+```json
+{
+    "sandbox": {
+        "homeMounts": [".bashrc", ".config/git"]
+    }
+}
+```
 
 ### `sandbox.env` (optional)
 
