@@ -1,7 +1,7 @@
 /**
- * Multi-Select Component
+ * Select Component
  *
- * A multi-select UI component with checkbox selection.
+ * A single-select UI component with cursor navigation and scrolling.
  */
 
 import type { ExtensionCommandContext, Theme } from "@mariozechner/pi-coding-agent";
@@ -15,60 +15,52 @@ import {
     Text,
 } from "@mariozechner/pi-tui";
 import { indentLines } from "../common/text";
+import type { PagerItem } from "./pager";
 
-// An item in the multi-select list
-export interface MultiSelectItem<T> {
-    value: T;
-    label: string;
-    disabled?: boolean;
+// Options passed to renderItem callback
+export interface SelectRenderItemOptions<T> {
+    index: number;
+    isCursor: boolean;
+    theme: Theme;
+    state: SelectState<T>;
 }
 
-// Options for the multi-select component
-export interface MultiSelectOptions<T> {
+// Options for the select component
+export interface SelectOptions<T> {
     // Title shown at the top
     title: string;
     // Items to display
-    items: MultiSelectItem<T>[];
-    // Pre-selected indices
-    initialSelected?: Set<number>;
+    items: PagerItem<T>[];
     // Initial cursor position
     initialCursor?: number;
     // Maximum visible items before scrolling
     maxVisible?: number;
-    // Custom render function for item content (cursor marker and checkbox are added automatically)
+    // Custom render function for item content (cursor marker is added automatically)
     renderItem?: (
-        item: MultiSelectItem<T>,
-        options: MultiSelectRenderOptions<T>,
+        item: PagerItem<T>,
+        options: SelectRenderItemOptions<T>,
     ) => string;
     // Optional header content rendered after title
     headerContent?: (container: Container, theme: Theme) => void;
     // Optional footer content rendered before help text
-    footerContent?: (container: Container, theme: Theme, state: MultiSelectState<T>) => void;
+    footerContent?: (container: Container, theme: Theme, state: SelectState<T>) => void;
     // Custom help text (defaults to standard navigation help)
     helpText?: string;
+    // Hook to intercept keys before select handles them. Return true to indicate key was handled, or { done: true } to close.
+    onKey?: (key: string, state: SelectState<T>) => boolean | { done: boolean };
 }
 
-// Options passed to renderItem callback
-export interface MultiSelectRenderOptions<T> {
-    index: number;
-    isSelected: boolean;
-    isCursor: boolean;
-    theme: Theme;
-    state: MultiSelectState<T>;
-}
-
-// Internal state for the multi-select
-export interface MultiSelectState<T> {
-    items: MultiSelectItem<T>[];
+// Internal state for the select
+export interface SelectState<T> {
+    items: PagerItem<T>[];
     cursor: number;
     maxVisibleLines: number;
-    selected: Set<number>;
 }
 
 // Default render for an item's content (just the label)
 function defaultRenderItem<T>(
-    item: MultiSelectItem<T>,
-    options: MultiSelectRenderOptions<T>,
+    item: PagerItem<T>,
+    options: SelectRenderItemOptions<T>,
 ): string {
     if (options.isCursor) {
         return options.theme.fg("accent", item.label);
@@ -94,20 +86,20 @@ function calculateScrollOffset(
 }
 
 /**
- * MultiSelectComponent - A multi-select component with checkboxes.
+ * SelectComponent - A single-select component with cursor navigation.
  * 
- * Renders a list of items with checkboxes that can be toggled.
+ * Renders a list of items with a cursor that can be navigated with arrow keys.
  * Supports multi-line items with proper scrolling.
  */
-export class MultiSelectComponent<T> implements Component {
+export class SelectComponent<T> implements Component {
     private container: Container;
     private contentContainer: Box;
     private theme: Theme | null = null;
-    private readonly renderItem: (item: MultiSelectItem<T>, options: MultiSelectRenderOptions<T>) => string;
+    private readonly renderItem: (item: PagerItem<T>, options: SelectRenderItemOptions<T>) => string;
     private readonly helpText: string;
     private readonly paddingX = 2;
     private readonly paddingY = 0;
-    private done: ((value: T[]) => void) | null = null;
+    private done: ((value: T | undefined) => void) | null = null;
     private scrollOffset = 0;
     private confirmed = false;
     
@@ -116,19 +108,18 @@ export class MultiSelectComponent<T> implements Component {
     private cachedItemStartLines: number[] = [];
     private cachedTotalLines = 0;
     
-    readonly state: MultiSelectState<T>;
+    readonly state: SelectState<T>;
 
     constructor(
-        public readonly options: MultiSelectOptions<T>,
+        public readonly options: SelectOptions<T>,
     ) {
         this.renderItem = options.renderItem ?? defaultRenderItem;
-        this.helpText = options.helpText ?? "↑/↓ navigate | Space toggle | a all | Enter confirm | Esc cancel";
+        this.helpText = options.helpText ?? "↑/↓ navigate | Enter confirm | Esc cancel";
         
         this.state = {
             items: options.items,
             cursor: options.initialCursor ?? 0,
             maxVisibleLines: options.maxVisible ?? 10,
-            selected: new Set(options.initialSelected ?? []),
         };
 
         this.container = new Container();
@@ -136,9 +127,9 @@ export class MultiSelectComponent<T> implements Component {
     }
 
     /**
-     * Set the done callback - called when multi-select should close
+     * Set the done callback - called when select should close
      */
-    setDoneCallback(done: (value: T[]) => void): void {
+    setDoneCallback(done: (value: T | undefined) => void): void {
         this.done = done;
     }
 
@@ -181,18 +172,9 @@ export class MultiSelectComponent<T> implements Component {
         return this.confirmed;
     }
 
-    /**
-     * Get selected values
-     */
-    getSelectedValues(): T[] {
-        return Array.from(this.state.selected)
-            .map((i) => this.options.items[i]?.value)
-            .filter(Boolean) as T[];
-    }
-
     render(width: number): string[] {
         if (!this.theme) {
-            throw new Error("MultiSelectComponent must be initialized with a theme before rendering");
+            throw new Error("SelectComponent must be initialized with a theme before rendering");
         }
         this.buildCacheAndUpdateScroll();
         this.updateContent();
@@ -204,31 +186,26 @@ export class MultiSelectComponent<T> implements Component {
     }
 
     handleInput(key: string): void {
-        // Toggle selection with Space
-        if (matchesKey(key, "space")) {
-            if (this.state.selected.has(this.state.cursor)) {
-                this.state.selected.delete(this.state.cursor);
-            } else {
-                this.state.selected.add(this.state.cursor);
+        // Allow external key handler to intercept first
+        if (this.options.onKey) {
+            const result = this.options.onKey(key, this.state);
+            if (result === true) {
+                this.scrollOffset = calculateScrollOffset(
+                    this.cachedItemStartLines,
+                    this.state.cursor,
+                    this.cachedTotalLines,
+                    this.state.maxVisibleLines,
+                );
+                this.invalidate();
+                return;
             }
-            this.invalidate();
-            return;
+            if (typeof result === "object" && result.done) {
+                this.confirmed = true;
+                this.done?.(this.options.items[this.state.cursor]?.value);
+                return;
+            }
         }
 
-        // Toggle all with 'a'
-        if (key === "a") {
-            if (this.state.selected.size === this.state.items.length) {
-                this.state.selected.clear();
-            } else {
-                for (let i = 0; i < this.state.items.length; i++) {
-                    this.state.selected.add(i);
-                }
-            }
-            this.invalidate();
-            return;
-        }
-
-        // Navigate up
         if (matchesKey(key, "up") || key === "k") {
             if (this.state.cursor > 0) {
                 this.state.cursor--;
@@ -243,7 +220,6 @@ export class MultiSelectComponent<T> implements Component {
             return;
         }
 
-        // Navigate down
         if (matchesKey(key, "down") || key === "j") {
             if (this.state.cursor < this.options.items.length - 1) {
                 this.state.cursor++;
@@ -258,16 +234,14 @@ export class MultiSelectComponent<T> implements Component {
             return;
         }
 
-        // Confirm with Enter
         if (matchesKey(key, "enter")) {
             this.confirmed = true;
-            this.done?.(this.getSelectedValues());
+            this.done?.(this.options.items[this.state.cursor]?.value);
             return;
         }
 
-        // Cancel with Escape or 'q'
         if (matchesKey(key, "escape") || key === "q") {
-            this.done?.([]);
+            this.done?.(undefined);
             return;
         }
     }
@@ -291,27 +265,24 @@ export class MultiSelectComponent<T> implements Component {
             }
 
             const isCursor = i === this.state.cursor;
-            const isSelected = this.state.selected.has(i);
-
-            const multiSelectOptions: MultiSelectRenderOptions<T> = {
+            const selectOptions: SelectRenderItemOptions<T> = {
                 index: i,
-                isSelected,
                 isCursor,
                 theme: this.theme,
                 state: this.state,
             };
 
-            const content = this.renderItem(item, multiSelectOptions);
+            const content = this.renderItem(item, selectOptions);
 
-            // Add checkbox prefix
-            const checkbox = isSelected ? "[x]" : "[ ]";
+            // Add cursor marker and indent multi-line content
+            const cursorMarker = isCursor ? "→ " : "  ";
             const prefix = isCursor
-                ? this.theme.fg("accent", `→ ${checkbox} `)
-                : `  ${checkbox} `;
+                ? this.theme.fg("accent", cursorMarker)
+                : cursorMarker;
 
             const indented = indentLines(content, {
                 firstLinePrefix: prefix,
-                continuationPrefix: "     ", // Align with checkbox
+                continuationPrefix: "  ",
             });
             const lines = indented.split("\n");
             
@@ -362,18 +333,6 @@ export class MultiSelectComponent<T> implements Component {
             );
         }
 
-        // Selection count
-        if (this.state.selected.size > 0) {
-            this.contentContainer.addChild(new Spacer(1));
-            this.contentContainer.addChild(
-                new Text(
-                    this.theme.fg("success", `  ${this.state.selected.size} item(s) selected`),
-                    1,
-                    0,
-                ),
-            );
-        }
-
         // Custom footer content if provided
         if (this.options.footerContent) {
             this.options.footerContent(this.contentContainer, this.theme, this.state);
@@ -388,24 +347,27 @@ export class MultiSelectComponent<T> implements Component {
     }
 }
 
-// Show multi-select UI and return selected values
-export async function multiSelect<T>(
-    options: MultiSelectOptions<T>,
+// Show select UI and return selected value (or undefined if cancelled)
+export async function select<T>(
+    options: SelectOptions<T>,
     ctx: ExtensionCommandContext,
-): Promise<T[]> {
+): Promise<T | undefined> {
     if (!ctx.hasUI) {
-        return [];
+        return undefined;
     }
 
     if (options.items.length === 0) {
-        return [];
+        return undefined;
     }
 
-    return ctx.ui.custom<T[]>((_tui, theme, _kb, done) => {
-        const component = new MultiSelectComponent(options);
+    return ctx.ui.custom<T | undefined>((_tui, theme, _kb, done) => {
+        const component = new SelectComponent(options);
         component.setDoneCallback(done);
         component.initialize(theme);
         
         return component;
     });
 }
+
+// Re-export types from pager for convenience
+export type { PagerItem } from "./pager";

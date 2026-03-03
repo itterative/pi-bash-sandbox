@@ -10,20 +10,145 @@
  */
 
 import {
-    DynamicBorder,
-    ThemeColor,
     type ExtensionAPI,
     type ExtensionCommandContext,
+    type ThemeColor,
 } from "@mariozechner/pi-coding-agent";
 
-import {
-    AutocompleteItem,
-    Container,
-    Spacer,
-    Text,
-} from "@mariozechner/pi-tui";
+import { AutocompleteItem, matchesKey } from "@mariozechner/pi-tui";
 
 import sandboxConfig from "../common/config";
+import { pager, type PagerItem, type PagerState } from "../components/pager";
+
+// Types for config display items
+type ConfigLineType =
+    | { type: "header"; text: string }
+    | { type: "dim"; text: string }
+    | { type: "mount"; path: string; access: string }
+    | { type: "env"; key: string; value: string }
+    | { type: "inherit-env"; key: string; action: string }
+    | { type: "permission"; pattern: string; perm: string }
+    | { type: "audit-model"; provider: string; model: string }
+    | { type: "audit-default" }
+    | { type: "blank" };
+
+// Build config display lines as items for the pager
+function buildConfigItems(config: NonNullable<typeof sandboxConfig.current>): PagerItem<ConfigLineType>[] {
+    const items: PagerItem<ConfigLineType>[] = [];
+
+    // Sandbox section
+    items.push({ value: { type: "header", text: "Sandbox:" }, label: "Sandbox:" });
+
+    // Mounts
+    const mounts = Object.entries(config.sandbox.mounts);
+    if (mounts.length > 0) {
+        items.push({ value: { type: "dim", text: "Mounts:" }, label: "Mounts:" });
+        for (const [path, access] of mounts) {
+            items.push({ value: { type: "mount", path, access }, label: `${path} → ${access}` });
+        }
+    } else {
+        items.push({ value: { type: "dim", text: "(no mounts)" }, label: "(no mounts)" });
+    }
+
+    // Env vars
+    if (config.sandbox.env && Object.keys(config.sandbox.env).length > 0) {
+        items.push({ value: { type: "dim", text: "Environment:" }, label: "Environment:" });
+        for (const [key, value] of Object.entries(config.sandbox.env)) {
+            items.push({ value: { type: "env", key, value }, label: `${key}=${value}` });
+        }
+    }
+
+    // Inherit env filter
+    if (config.sandbox.inheritEnv && Object.keys(config.sandbox.inheritEnv).length > 0) {
+        items.push({ value: { type: "dim", text: "Inherit env filter:" }, label: "Inherit env filter:" });
+        for (const [key, action] of Object.entries(config.sandbox.inheritEnv)) {
+            items.push({ value: { type: "inherit-env", key, action }, label: `${key} → ${action}` });
+        }
+    }
+
+    items.push({ value: { type: "blank" }, label: "" });
+
+    // Permissions section
+    items.push({ value: { type: "header", text: "Permissions:" }, label: "Permissions:" });
+
+    const permissions = Object.entries(config.permissions);
+    if (permissions.length > 0) {
+        const maxPatternLength = Math.max(...permissions.map(([p]) => p.length));
+        for (const [pattern, perm] of permissions) {
+            items.push({
+                value: { type: "permission", pattern, perm },
+                label: `${pattern.padEnd(maxPatternLength)} ${perm}`,
+            });
+        }
+    } else {
+        items.push({ value: { type: "dim", text: "(no permissions defined)" }, label: "(no permissions defined)" });
+    }
+
+    items.push({ value: { type: "blank" }, label: "" });
+
+    // Audit section
+    items.push({ value: { type: "header", text: "Audit:" }, label: "Audit:" });
+    if (config.audit?.provider && config.audit?.model) {
+        items.push({
+            value: { type: "audit-model", provider: config.audit.provider, model: config.audit.model },
+            label: `Model: ${config.audit.provider}/${config.audit.model}`,
+        });
+    } else {
+        items.push({ value: { type: "audit-default" }, label: "Model: (using current session model)" });
+    }
+
+    return items;
+}
+
+// Render a config line with theme styling
+function renderConfigLine(item: PagerItem<ConfigLineType>, theme: { fg: (color: ThemeColor, text: string) => string }): string {
+    const line = item.value;
+
+    switch (line.type) {
+        case "header":
+            return theme.fg("success", line.text);
+
+        case "dim":
+            return theme.fg("dim", `  ${line.text}`);
+
+        case "mount":
+            const accessColor = line.access === "readonly" ? "warning" : "success";
+            return `    ${line.path} → ${theme.fg(accessColor, line.access)}`;
+
+        case "env":
+            return `    ${line.key}=${theme.fg("muted", line.value)}`;
+
+        case "inherit-env":
+            const actionColor = line.action === "allow" ? "success" : "error";
+            return `    ${line.key} → ${theme.fg(actionColor, line.action)}`;
+
+        case "permission":
+            let permColor: ThemeColor;
+            switch (line.perm) {
+                case "allow":
+                    permColor = "success";
+                    break;
+                case "allow:sandbox":
+                    permColor = "warning";
+                    break;
+                case "deny":
+                    permColor = "error";
+                    break;
+                default:
+                    permColor = "muted";
+            }
+            return `  ${line.pattern} ${theme.fg(permColor, line.perm)}`;
+
+        case "audit-model":
+            return `  Model: ${theme.fg("accent", `${line.provider}/${line.model}`)}`;
+
+        case "audit-default":
+            return theme.fg("dim", "  Model: (using current session model)");
+
+        case "blank":
+            return "";
+    }
+}
 
 async function showConfig(_args: string, ctx: ExtensionCommandContext) {
     const config = sandboxConfig.current;
@@ -45,166 +170,50 @@ async function showConfig(_args: string, ctx: ExtensionCommandContext) {
         return;
     }
 
-    await ctx.ui.custom<void>((tui, theme, _kb, done) => {
-        const container = new Container();
-        const borderColor = (s: string) => theme.fg("border", s);
+    const items = buildConfigItems(config);
+    const maxVisibleLines = 15;
+    let scrollOffset = 0;
 
-        container.addChild(new DynamicBorder(borderColor));
+    // Calculate total lines for scroll bounds
+    let totalLines = 0;
+    for (const item of items) {
+        totalLines += item.label.split("\n").length;
+    }
 
-        // Header
-        container.addChild(
-            new Text(
-                theme.fg(
-                    "accent",
-                    theme.bold("  pi-bash-sandbox: Current configuration"),
-                ),
-                1,
-                0,
-            ),
-        );
-        container.addChild(new Spacer(1));
+    const maxScrollOffset = Math.max(0, totalLines - maxVisibleLines);
 
-        // Sandbox section
-        container.addChild(new Text(theme.fg("success", "  Sandbox:"), 1, 0));
-
-        // Mounts
-        const mounts = Object.entries(config.sandbox.mounts);
-        if (mounts.length > 0) {
-            container.addChild(new Text(theme.fg("dim", "    Mounts:"), 1, 0));
-            for (const [path, access] of mounts) {
-                const accessColor =
-                    access === "readonly" ? "warning" : "success";
-                container.addChild(
-                    new Text(
-                        `      ${path} → ${theme.fg(accessColor, access)}`,
-                        1,
-                        0,
-                    ),
-                );
-            }
-        } else {
-            container.addChild(
-                new Text(theme.fg("dim", "    (no mounts)"), 1, 0),
-            );
-        }
-
-        // Env vars
-        if (config.sandbox.env && Object.keys(config.sandbox.env).length > 0) {
-            container.addChild(
-                new Text(theme.fg("dim", "    Environment:"), 1, 0),
-            );
-            for (const [key, value] of Object.entries(config.sandbox.env)) {
-                container.addChild(
-                    new Text(`      ${key}=${theme.fg("muted", value)}`, 1, 0),
-                );
-            }
-        }
-
-        // Inherit env filter
-        if (
-            config.sandbox.inheritEnv &&
-            Object.keys(config.sandbox.inheritEnv).length > 0
-        ) {
-            container.addChild(
-                new Text(theme.fg("dim", "    Inherit env filter:"), 1, 0),
-            );
-            for (const [key, action] of Object.entries(
-                config.sandbox.inheritEnv,
-            )) {
-                const actionColor = action === "allow" ? "success" : "error";
-                container.addChild(
-                    new Text(
-                        `      ${key} → ${theme.fg(actionColor, action)}`,
-                        1,
-                        0,
-                    ),
-                );
-            }
-        }
-
-        container.addChild(new Spacer(1));
-
-        // Permissions section
-        container.addChild(
-            new Text(theme.fg("success", "  Permissions:"), 1, 0),
-        );
-
-        const permissions = Object.entries(config.permissions);
-        if (permissions.length > 0) {
-            const maxPatternLength = Math.max(
-                ...permissions.map(([p]) => p.length),
-            );
-
-            for (const [pattern, perm] of permissions) {
-                let permColor: ThemeColor;
-                switch (perm) {
-                    case "allow":
-                        permColor = "success";
-                        break;
-                    case "allow:sandbox":
-                        permColor = "warning";
-                        break;
-                    case "deny":
-                        permColor = "error";
-                        break;
-                    default:
-                        permColor = "muted";
+    await pager(
+        {
+            title: "pi-bash-sandbox: Current configuration",
+            items,
+            scrollOffset,
+            maxVisibleLines,
+            helpText: "↑/↓ scroll | Esc close",
+            renderItem: (item, options) => {
+                return renderConfigLine(item, options.theme);
+            },
+            onKey: (key, state) => {
+                if (matchesKey(key, "up") || key === "k") {
+                    if (scrollOffset > 0) {
+                        scrollOffset--;
+                        state.scrollOffset = scrollOffset;
+                    }
+                    return true;
                 }
-                container.addChild(
-                    new Text(
-                        `    ${pattern.padEnd(maxPatternLength)} ${theme.fg(permColor, perm)}`,
-                        1,
-                        0,
-                    ),
-                );
-            }
-        } else {
-            container.addChild(
-                new Text(theme.fg("dim", "    (no permissions defined)"), 1, 0),
-            );
-        }
 
-        // Audit section
-        container.addChild(new Spacer(1));
-        container.addChild(new Text(theme.fg("success", "  Audit:"), 1, 0));
+                if (matchesKey(key, "down") || key === "j") {
+                    if (scrollOffset < maxScrollOffset) {
+                        scrollOffset++;
+                        state.scrollOffset = scrollOffset;
+                    }
+                    return true;
+                }
 
-        if (config.audit?.provider && config.audit?.model) {
-            container.addChild(
-                new Text(
-                    `    Model: ${theme.fg("accent", `${config.audit.provider}/${config.audit.model}`)}`,
-                    1,
-                    0,
-                ),
-            );
-        } else {
-            container.addChild(
-                new Text(
-                    theme.fg(
-                        "dim",
-                        "    Model: (using current session model): ",
-                    ),
-                    1,
-                    0,
-                ),
-            );
-        }
-
-        container.addChild(new Spacer(1));
-        container.addChild(
-            new Text(theme.fg("muted", "  Press any key to close"), 1, 0),
-        );
-        container.addChild(new DynamicBorder(borderColor));
-
-        const handleInput = (_data: string) => {
-            done();
-        };
-
-        return {
-            render: (_width: number) => container.render(_width),
-            invalidate: () => {},
-            handleInput,
-        };
-    });
+                return false;
+            },
+        },
+        ctx,
+    );
 }
 
 export default function registerConfigCommand(pi: ExtensionAPI) {

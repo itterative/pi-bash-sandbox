@@ -25,7 +25,7 @@ import {
     Text,
 } from "@mariozechner/pi-tui";
 import { multiSelect, type MultiSelectItem, type MultiSelectRenderOptions } from "../components/multi-select";
-import { pager, type PagerItem, type RenderItemOptions } from "../components/pager";
+import { select, type PagerItem, type SelectRenderItemOptions } from "../components/select";
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -620,10 +620,10 @@ async function listAudit(_args: string, ctx: ExtensionCommandContext) {
         label: c.command,
     }));
 
-    // Custom render function for pager items
+    // Custom render function for select items
     const renderItem = (
         item: PagerItem<AggregatedCommand>,
-        options: RenderItemOptions<AggregatedCommand>,
+        options: SelectRenderItemOptions<AggregatedCommand>,
     ): string => {
         const { isCursor, theme } = options;
         const c = item.value;
@@ -651,11 +651,11 @@ async function listAudit(_args: string, ctx: ExtensionCommandContext) {
         return allLines.join("\n");
     };
 
-    await pager(
+    await select(
         {
             title: "pi-bash-sandbox: Recent commands",
             items,
-            maxVisibleLines: 10,
+            maxVisible: 10,
             renderItem,
             helpText: "↑/↓ navigate | Enter/Esc close",
         },
