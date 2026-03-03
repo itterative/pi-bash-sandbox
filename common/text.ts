@@ -2,6 +2,8 @@
  * Text utilities for formatting and truncating multi-line text.
  */
 
+import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+
 // Options for indenting lines
 export interface IndentLinesOptions {
     // Prefix for the first line
@@ -47,6 +49,7 @@ export interface TruncateLinesOptions {
 }
 
 // Truncate multi-line text to fit within line/length limits
+// Uses ANSI-aware width calculation and truncation
 export function truncateLines(text: string, options: TruncateLinesOptions = {}): string {
     const {
         maxLines,
@@ -69,8 +72,8 @@ export function truncateLines(text: string, options: TruncateLinesOptions = {}):
             ? (maxLineLength ?? Infinity) - firstLineLengthReduction
             : maxLineLength ?? Infinity;
 
-        if (maxLen !== Infinity && line.length > maxLen) {
-            line = line.slice(0, maxLen - truncationSuffix.length) + truncationSuffix;
+        if (maxLen !== Infinity && visibleWidth(line) > maxLen) {
+            line = truncateToWidth(line, maxLen, truncationSuffix);
         }
         result.push(line);
     }
