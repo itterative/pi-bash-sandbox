@@ -82,6 +82,7 @@ function buildMountCmd(sandboxConfig: SandboxConfig, options?: SandboxOptions): 
 
     cmd.push("--proc", "/proc");
     cmd.push("--dev", "/dev");
+    cmd.push("--size", "536870912", "--perms", "0750", "--tmpfs", "/tmp")
 
     // Minimal system mounts (no /etc - too much sensitive data)
     const systemMounts = ["/usr", "/bin", "/lib", "/lib64"];
@@ -126,7 +127,7 @@ function buildMountCmd(sandboxConfig: SandboxConfig, options?: SandboxOptions): 
         const homeDir = env.HOME ?? os.homedir();
         if (homeDir) {
             let homeMounts: string[];
-            
+
             if (homeMountsConfig === true || homeMountsConfig === undefined) {
                 // Use defaults
                 homeMounts = DEFAULT_HOME_MOUNTS;
