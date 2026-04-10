@@ -35,6 +35,7 @@ import {
 import sandboxConfig, { type SandboxConfigPermissions } from "../common/config";
 import { truncateLines } from "../common/text";
 import getPermission from "../sandbox/permissions";
+import { getModelCredentials } from "../common/credentials";
 
 // Aggregated command data for analysis
 interface AggregatedCommand {
@@ -476,11 +477,7 @@ async function runAudit(
         return;
     }
 
-    const apiKey = await ctx.modelRegistry.getApiKey(model);
-    if (!apiKey) {
-        ctx.ui.notify(`No API key for ${model.provider}/${model.id}`, "error");
-        return;
-    }
+    const modelCredentials = await getModelCredentials(ctx, model);
 
     // Filter out commands that already match existing permissions
     const unmatchedCommands = commands.filter((cmd) => {
@@ -526,7 +523,11 @@ async function runAudit(
                         ],
                         systemPrompt: AUDIT_SYSTEM_INSTRUCTION,
                     },
-                    { apiKey, signal: loader.signal },
+                    {
+                        apiKey: modelCredentials.apiKey,
+                        headers: modelCredentials.headers,
+                        signal: loader.signal
+                    },
                 );
 
                 if (response.stopReason === "aborted") {

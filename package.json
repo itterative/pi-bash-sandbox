@@ -8,10 +8,11 @@
     ]
   },
   "dependencies": {
-    "@mariozechner/pi-coding-agent": "^0.55.1",
     "lookpath": "^1.2.3"
   },
   "devDependencies": {
+    "@mariozechner/pi-ai": "^0.65.2",
+    "@mariozechner/pi-coding-agent": "^0.65.2",
     "@types/node": "^25.3.3",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"
