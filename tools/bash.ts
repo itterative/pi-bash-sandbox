@@ -106,7 +106,8 @@ Pay attention to these notes as they provide context abot the user's preferences
 
             const result = await selectWithMessage(
                 {
-                    title: `pi-bash-sandbox: Agent is trying to run:\n\n${indentLines(event.input.command, { firstLinePrefix: "  " })}\n\nDo you allow this command?`,
+                    title: "pi-bash-sandbox: Agent is trying to run a command. Do you want to allow?",
+                    contentLines: indentLines(event.input.command, { firstLinePrefix: "  " }).split("\n"),
                     items,
                 },
                 ctx,
