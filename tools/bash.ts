@@ -8,7 +8,6 @@ import type {
 
 import sandboxConfig from "../common/config";
 import { ALLOWED_COMMAND_ENTRY_TYPE, type AllowedCommandEntry } from "../common/audit";
-import { indentLines } from "../common/text";
 import sandbox from "../sandbox/bubblewrap";
 import getPermission, { Permission } from "../sandbox/permissions";
 import { selectWithMessage, type SelectMessageItem } from "../components/select-with-message";
@@ -107,7 +106,7 @@ Pay attention to these notes as they provide context abot the user's preferences
             const result = await selectWithMessage(
                 {
                     title: "pi-bash-sandbox: Agent is trying to run a command. Do you want to allow?",
-                    contentLines: indentLines(event.input.command, { firstLinePrefix: "  " }).split("\n"),
+                    contentLines: event.input.command.split("\n"),
                     items,
                 },
                 ctx,

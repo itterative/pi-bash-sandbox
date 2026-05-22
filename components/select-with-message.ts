@@ -27,6 +27,11 @@
  * - Tab switches to inline edit mode: "Option, |" where cursor types
  * - In edit mode: Enter confirms with message, Escape returns to selection
  * - PageUp/PageDown scrolls the content area
+ *
+ * Scrolling:
+ * - scrollOffset is a visual-row index (accounts for wrapped lines)
+ * - When a wrapped line is split by scrolling, the continuation gets an
+ *   ellipsis prefix ("… │ ") to indicate it belongs to the line above
  */
 
 import type { ExtensionContext, Theme } from "@mariozechner/pi-coding-agent";
@@ -39,6 +44,7 @@ import {
     matchesKey,
     Spacer,
     Text,
+    wrapTextWithAnsi,
 } from "@mariozechner/pi-tui";
 
 // An item in the select list
@@ -81,15 +87,18 @@ export interface SelectWithMessageResult<T> {
     displayText: string;
 }
 
-// Calculate clamped scroll offset after applying a delta
-function clampScrollOffset(
-    totalLines: number,
-    currentOffset: number,
-    delta: number,
-    maxVisibleLines: number,
-): number {
-    const maxOffset = Math.max(0, totalLines - maxVisibleLines);
-    return Math.max(0, Math.min(currentOffset + delta, maxOffset));
+// Per-logical-line info after wrapping (content only, no prefixes)
+interface LogicalLineInfo {
+    // Wrapped text parts (raw content, no prefix)
+    parts: string[];
+    // Number of visual rows this logical line occupies
+    visualCount: number;
+}
+
+// Maps a visual row to its logical line and part
+interface FlatEntry {
+    logicalIdx: number;
+    partIdx: number;
 }
 
 /**
@@ -97,6 +106,10 @@ function clampScrollOffset(
  *
  * Uses the same Container/Box/Text/DynamicBorder pattern as PagerComponent
  * and SelectComponent.
+ *
+ * Scrolling is by visual rows. scrollOffset is a visual-row index into
+ * the flat index. When scrolling splits a wrapped line, the first visible
+ * continuation row gets an ellipsis prefix ("… │ ") instead of blank prefix.
  */
 class SelectWithMessageComponent<T> implements Component, Focusable {
     private container: Container;
@@ -113,7 +126,11 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
     cursor: number;
     editing = false;
     editBuffer = "";
+    // Scroll offset — visual-row index (0-based) into flatIndex
     scrollOffset = 0;
+    // Computed during render, used by PgUp/PgDn
+    lineInfos: LogicalLineInfo[] = [];
+    flatIndex: FlatEntry[] = [];
     private _focused = false;
 
     constructor(
@@ -169,7 +186,7 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
         if (!this.theme) {
             throw new Error("SelectWithMessageComponent must be initialized before rendering");
         }
-        this.rebuildContent();
+        this.rebuildContent(width);
         return this.container.render(width);
     }
 
@@ -181,45 +198,111 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
         // Handled by the wrapper in selectWithMessage()
     }
 
-    private rebuildContent(): void {
+    /**
+     * Pre-compute per-logical-line info (wrapped text parts, no prefixes)
+     * and build the flat visual-row index.
+     */
+    private computeLineInfos(
+        contentLines: string[],
+        width: number,
+    ): { infos: LogicalLineInfo[]; flatIndex: FlatEntry[] } {
+        const totalLines = contentLines.length;
+        if (totalLines === 0) return { infos: [], flatIndex: [] };
+
+        const lineNumWidth = String(totalLines).length;
+        // Effective content width: Container(width) → Box(padX=1) → Text(padX=1) = width-4
+        const effectiveTextWidth = Math.max(1, width - 4);
+        // Visible width of prefix like "  1 │ " = lineNumWidth + 3
+        const prefixVisWidth = lineNumWidth + 3;
+        const textContentWidth = Math.max(1, effectiveTextWidth - prefixVisWidth);
+
+        const infos: LogicalLineInfo[] = [];
+        const flatIndex: FlatEntry[] = [];
+
+        for (let i = 0; i < totalLines; i++) {
+            const line = contentLines[i]!;
+
+            let parts: string[];
+            if (line.trim() === "") {
+                parts = [""];
+            } else {
+                parts = wrapTextWithAnsi(line, textContentWidth);
+            }
+
+            infos.push({ parts, visualCount: parts.length });
+            for (let pi = 0; pi < parts.length; pi++) {
+                flatIndex.push({ logicalIdx: i, partIdx: pi });
+            }
+        }
+
+        return { infos, flatIndex };
+    }
+
+    private rebuildContent(width: number): void {
         if (!this.theme) return;
 
         this.contentBox.clear();
 
         // --- Scrollable content area ---
         const contentLines = this.options.contentLines;
-        const totalLines = contentLines.length;
+        const totalLogicalLines = contentLines.length;
 
-        if (totalLines > 0) {
-            const maxOffset = Math.max(0, totalLines - this.maxContentLines);
-            const clampedOffset = Math.max(0, Math.min(this.scrollOffset, maxOffset));
-            const visibleLines = contentLines.slice(clampedOffset, clampedOffset + this.maxContentLines);
-            const lineNumWidth = String(totalLines).length;
+        if (totalLogicalLines > 0) {
+            const { infos, flatIndex } = this.computeLineInfos(contentLines, width);
+            this.lineInfos = infos;
+            this.flatIndex = flatIndex;
 
-            for (let vi = 0; vi < visibleLines.length; vi++) {
-                const lineNum = clampedOffset + vi + 1;
-                const line = visibleLines[vi];
-                const numPrefix = this.theme.fg("dim", String(lineNum).padStart(lineNumWidth) + " │ ");
+            const totalVisual = flatIndex.length;
 
-                if (line.trim() === "") {
-                    this.contentBox.addChild(new Text(numPrefix, 1, 0));
+            // Clamp scroll offset to valid range
+            const maxOffset = Math.max(0, totalVisual - this.maxContentLines);
+            const start = Math.max(0, Math.min(this.scrollOffset, maxOffset));
+            this.scrollOffset = start;
+            const end = Math.min(totalVisual, start + this.maxContentLines);
+
+            // Prefixes
+            const lineNumWidth = String(totalLogicalLines).length;
+            const numPrefix = (idx: number) =>
+                this.theme!.fg("dim", String(idx + 1).padStart(lineNumWidth) + " │ ");
+            const contPrefix = this.theme!.fg("dim", " ".repeat(lineNumWidth) + " │ ");
+            const ellipsisPrefix = this.theme!.fg("dim", " ".repeat(Math.max(0, lineNumWidth - 1)) + "… │ ");
+
+            // Render visible visual rows
+            for (let vi = start; vi < end; vi++) {
+                const entry = flatIndex[vi]!;
+                let prefix: string;
+
+                if (entry.partIdx === 0) {
+                    // First visual row of a logical line — numbered prefix
+                    prefix = numPrefix(entry.logicalIdx);
+                } else if (vi === start) {
+                    // Continuation row is the first visible row — ellipsis prefix
+                    prefix = ellipsisPrefix;
                 } else {
-                    this.contentBox.addChild(new Text(numPrefix + line, 1, 0));
+                    // Normal continuation — blank prefix
+                    prefix = contPrefix;
                 }
+
+                const content = infos[entry.logicalIdx]!.parts[entry.partIdx]!;
+                this.contentBox.addChild(new Text(prefix + content, 1, 0));
             }
 
-            // Scroll indicator
-            if (totalLines > this.maxContentLines) {
-                const endLine = clampedOffset + visibleLines.length;
+            // Scroll indicator — only when not all visual rows fit
+            if (totalVisual > this.maxContentLines) {
+                const firstLogical = flatIndex[start]!.logicalIdx + 1;
+                const lastLogical = flatIndex[end - 1]!.logicalIdx + 1;
                 this.contentBox.addChild(new Spacer(1));
                 this.contentBox.addChild(
                     new Text(
-                        this.theme.fg("dim", `  Showing lines ${clampedOffset + 1}-${endLine} of ${totalLines} (PgUp/PgDn to scroll)`),
+                        this.theme!.fg("dim", `  Showing lines ${firstLogical}-${lastLogical} of ${totalLogicalLines} (PgUp/PgDn to scroll)`),
                         1,
                         0,
                     ),
                 );
             }
+        } else {
+            this.lineInfos = [];
+            this.flatIndex = [];
         }
 
         this.contentBox.addChild(new Spacer(1));
@@ -233,13 +316,13 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
             const isEditing = isCursor && this.editing;
 
             const prefix = isCursor
-                ? this.theme.fg("accent", "→ ")
+                ? this.theme!.fg("accent", "→ ")
                 : "  ";
 
             let content: string;
 
             if (isEditing) {
-                const label = this.theme.fg("accent", item.label);
+                const label = this.theme!.fg("accent", item.label);
                 const buffer = this.editBuffer;
                 const hasContent = buffer.length > 0;
 
@@ -250,16 +333,16 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
                     content = `${label}${this.messageSeparator}${buffer}${marker}${visualCursor}`;
                 } else {
                     const placeholderText = item.placeholder ?? this.messagePlaceholder;
-                    const placeholder = this.theme.fg("dim", placeholderText);
+                    const placeholder = this.theme!.fg("dim", placeholderText);
                     content = `${label}${this.messageSeparator}${marker}${visualCursor}${placeholder}`;
                 }
             } else {
                 const label = isCursor
-                    ? this.theme.fg("accent", item.label)
+                    ? this.theme!.fg("accent", item.label)
                     : item.label;
 
                 content = item.description
-                    ? `${label}${this.theme.fg("muted", ` - ${item.description}`)}`
+                    ? `${label}${this.theme!.fg("muted", ` - ${item.description}`)}`
                     : label;
             }
 
@@ -271,7 +354,7 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
         // Help text
         const helpText = this.editing ? this.editHelpText : this.selectHelpText;
         this.contentBox.addChild(
-            new Text(this.theme.fg("muted", `  ${helpText}`), 1, 0),
+            new Text(this.theme!.fg("muted", `  ${helpText}`), 1, 0),
         );
     }
 }
@@ -359,23 +442,20 @@ export async function selectWithMessage<T>(
             }
 
             if (matchesKey(key, "pageUp")) {
-                component.scrollOffset = clampScrollOffset(
-                    options.contentLines.length,
-                    component.scrollOffset,
-                    -(options.maxContentLines ?? 10),
-                    options.maxContentLines ?? 10,
-                );
+                const maxCL = options.maxContentLines ?? 10;
+                component.scrollOffset = Math.max(0, component.scrollOffset - maxCL);
                 component.invalidate();
                 return;
             }
 
             if (matchesKey(key, "pageDown")) {
-                component.scrollOffset = clampScrollOffset(
-                    options.contentLines.length,
-                    component.scrollOffset,
-                    options.maxContentLines ?? 10,
-                    options.maxContentLines ?? 10,
-                );
+                const flatIndex = component.flatIndex;
+                const maxCL = options.maxContentLines ?? 10;
+                const currentEnd = Math.min(flatIndex.length, component.scrollOffset + maxCL);
+
+                if (currentEnd < flatIndex.length) {
+                    component.scrollOffset = currentEnd;
+                }
                 component.invalidate();
                 return;
             }
