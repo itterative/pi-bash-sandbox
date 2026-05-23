@@ -200,8 +200,8 @@ Pay attention to these notes as they provide context about the user's preference
         const trimmed = userMessage.trim();
         const hasNewlines = trimmed.includes("\n");
         const note = hasNewlines
-            ? `<user_note>\nThe user has made a note: ${trimmed}\n</user_note>`
-            : `<user_note>The user has made a note: ${trimmed}</user_note>`;
+            ? `<user_note>\nThe user has made a note: ${trimmed}\n</user_note>\n`
+            : `<user_note>The user has made a note: ${trimmed}</user_note>\n`;
         return {
             content: [
                 { type: "text", text: note },
