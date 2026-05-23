@@ -26,7 +26,15 @@
  * - Enter selects option immediately (no message)
  * - Tab switches to inline edit mode: "Option, |" where cursor types
  * - In edit mode: Enter confirms with message, Escape returns to selection
+ * - In edit mode: ←/→ move cursor, ↑/↓ navigate visual lines
  * - PageUp/PageDown scrolls the content area
+ *
+ * Edit buffer model:
+ * - Segments: typed text or large pastes (shown as placeholder)
+ * - cursorPos: flat offset into concatenated content
+ * - Paste segments are atomic for cursor navigation (left/right skip them)
+ * - Display buffer replaces paste content with placeholders; cursor mapping
+ *   translates between content and display positions
  *
  * Scrolling:
  * - scrollOffset is a visual-row index (accounts for wrapped lines)
@@ -122,12 +130,8 @@ function wrapPreservingSpaces(text: string, width: number): string[] {
     let remaining = text;
 
     while (visibleWidth(remaining) > width) {
-        // Find the break point: last space that fits within width
-        // Walk character-by-character tracking visible width
-        let breakAt = -1;
+        let lastSpaceStrIdx = -1;
         let visPos = 0;
-        let lastSpaceVisEnd = -1; // visible width at end of last space
-        let lastSpaceStrIdx = -1; // string index after last space
 
         for (let si = 0; si < remaining.length; si++) {
             const ch = remaining.codePointAt(si)!;
@@ -139,26 +143,23 @@ function wrapPreservingSpaces(text: string, width: number): string[] {
                     continue;
                 }
             }
-            const charWidth = ch > 0xffff ? 2 : 1; // simplified: treat non-BMP as wide
-            const nextVisPos = visPos + charWidth;
+            const charWidth = ch > 0xffff ? 2 : 1;
+            visPos += charWidth;
 
-            if (nextVisPos > width) {
+            if (visPos > width) {
                 break;
             }
 
-            if (ch === 32) { // space
-                lastSpaceVisEnd = nextVisPos;
+            if (ch === 32) {
                 lastSpaceStrIdx = si + 1;
             }
-            visPos = nextVisPos;
         }
 
         if (lastSpaceStrIdx > 0) {
-            // Break after the last space that fits
             lines.push(remaining.substring(0, lastSpaceStrIdx));
             remaining = remaining.substring(lastSpaceStrIdx);
         } else {
-            // No space to break at — hard-break at width (find string index)
+            // Hard break at width
             let hardIdx = 0;
             let hv = 0;
             for (let si = 0; si < remaining.length; si++) {
@@ -190,15 +191,17 @@ function wrapPreservingSpaces(text: string, width: number): string[] {
     return lines.length > 0 ? lines : [""];
 }
 
+// Visual line info for cursor navigation
+interface EditVisLine {
+    dispStart: number; // start offset in display string
+    dispEnd: number;   // end offset (exclusive) in display string
+    text: string;      // visible text (plain, no prefix)
+    isFirst: boolean;  // is the very first visual line of the edit area
+    truncOffset: number; // display chars skipped due to truncation (0 if not truncated)
+}
+
 /**
  * SelectWithMessageComponent
- *
- * Uses the same Container/Box/Text/DynamicBorder pattern as PagerComponent
- * and SelectComponent.
- *
- * Scrolling is by visual rows. scrollOffset is a visual-row index into
- * the flat index. When scrolling splits a wrapped line, the first visible
- * continuation row gets an ellipsis prefix ("… │ ") instead of blank prefix.
  */
 class SelectWithMessageComponent<T> implements Component, Focusable {
     private container: Container;
@@ -214,13 +217,25 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
     // Mutable state
     cursor: number;
     editing = false;
-    // Segment-based edit buffer: typed text and large pastes tracked separately
+    // Segment-based edit buffer
     editSegments: EditSegment[] = [];
-    // Flat string for the full edit buffer (for display and confirm)
     get editBuffer(): string {
         return this.editSegments.map(s => s.content).join("");
     }
-    // Scroll offset — visual-row index (0-based) into flatIndex
+
+    // Cursor position: flat offset into concatenated content (0 to totalLength)
+    cursorPos: number = 0;
+    // Desired column for vertical navigation (null = use actual)
+    desiredCol: number | null = null;
+
+    // Stored during render for up/down navigation (all visual lines)
+    private editAllVisLines: EditVisLine[] = [];
+    private editVisLines: EditVisLine[] = [];
+    private editDispToContent: number[] = [];
+    private editCursorDispOff: number = 0;
+    private editCursorVisLineIdx: number = 0;
+
+    // Scroll offset for content area
     scrollOffset = 0;
     // Computed during render, used by PgUp/PgDn
     lineInfos: LogicalLineInfo[] = [];
@@ -292,10 +307,159 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
         // Handled by the wrapper in selectWithMessage()
     }
 
-    /**
-     * Pre-compute per-logical-line info (wrapped text parts, no prefixes)
-     * and build the flat visual-row index.
-     */
+    // --- Segment / cursor helpers ---
+
+    getContentLength(): number {
+        return this.editSegments.reduce((sum, s) => sum + s.content.length, 0);
+    }
+
+    /** Map flat content position to (segmentIndex, offset within segment). */
+    getSegmentAtPos(pos: number): { segIdx: number; offset: number } {
+        let accumulated = 0;
+        for (let i = 0; i < this.editSegments.length; i++) {
+            const segLen = this.editSegments[i]!.content.length;
+            if (pos <= accumulated + segLen) {
+                return { segIdx: i, offset: pos - accumulated };
+            }
+            accumulated += segLen;
+        }
+        // Past the end — clamp to end of last segment
+        const lastIdx = Math.max(0, this.editSegments.length - 1);
+        return { segIdx: lastIdx, offset: this.editSegments[lastIdx]?.content.length ?? 0 };
+    }
+
+    /** Map (segmentIndex, offset) to flat content position. */
+    getFlatPos(segIdx: number, offset: number): number {
+        let pos = 0;
+        for (let i = 0; i < segIdx; i++) {
+            pos += this.editSegments[i]!.content.length;
+        }
+        return pos + offset;
+    }
+
+    // --- Cursor movement ---
+
+    moveCursorLeft(): void {
+        if (this.cursorPos <= 0) return;
+        this.cursorPos--;
+        this.desiredCol = null;
+        // If landed inside a paste segment, jump to its start
+        const { segIdx, offset } = this.getSegmentAtPos(this.cursorPos);
+        const seg = this.editSegments[segIdx];
+        if (seg?.type === "paste") {
+            this.cursorPos = this.getFlatPos(segIdx, 0);
+        }
+    }
+
+    moveCursorRight(): void {
+        const totalLen = this.getContentLength();
+        if (this.cursorPos >= totalLen) return;
+        this.cursorPos++;
+        this.desiredCol = null;
+        // If landed inside a paste segment, jump to its end
+        const { segIdx } = this.getSegmentAtPos(this.cursorPos);
+        const seg = this.editSegments[segIdx];
+        if (seg?.type === "paste") {
+            this.cursorPos = this.getFlatPos(segIdx, seg.content.length);
+        }
+    }
+
+    moveCursorUp(): void {
+        if (this.editAllVisLines.length === 0) return;
+
+        const curLine = this.editCursorVisLineIdx;
+        if (curLine <= 0) {
+            // Already on absolute first line — move to start
+            this.cursorPos = 0;
+            this.desiredCol = null;
+            return;
+        }
+
+        const curVl = this.editAllVisLines[curLine]!;
+        const curCol = this.desiredCol ?? (this.editCursorDispOff - curVl.dispStart);
+        this.desiredCol = curCol;
+
+        const prev = this.editAllVisLines[curLine - 1]!;
+        const targetDispOff = Math.min(prev.dispStart + curCol, prev.dispEnd);
+        this.cursorPos = this.editDispToContent[targetDispOff] ?? 0;
+    }
+
+    moveCursorDown(): void {
+        if (this.editAllVisLines.length === 0) return;
+
+        const curLine = this.editCursorVisLineIdx;
+        if (curLine === -1 || curLine >= this.editAllVisLines.length - 1) {
+            // Already on absolute last line — move to end
+            this.cursorPos = this.getContentLength();
+            this.desiredCol = null;
+            return;
+        }
+
+        const curVl = this.editAllVisLines[curLine]!;
+        const curCol = this.desiredCol ?? (this.editCursorDispOff - curVl.dispStart);
+        this.desiredCol = curCol;
+
+        const next = this.editAllVisLines[curLine + 1]!;
+        const targetDispOff = Math.min(next.dispStart + curCol, next.dispEnd);
+        this.cursorPos = this.editDispToContent[targetDispOff] ?? this.getContentLength();
+    }
+
+    // --- Editing ---
+
+    /** Insert text at cursor position. */
+    insertAtCursor(text: string): void {
+        if (this.editSegments.length === 0) {
+            this.editSegments.push({ type: "text", content: text });
+            this.cursorPos = text.length;
+            return;
+        }
+
+        const { segIdx, offset } = this.getSegmentAtPos(this.cursorPos);
+        const seg = this.editSegments[segIdx];
+
+        if (seg && seg.type === "text") {
+            // Insert into existing text segment
+            seg.content = seg.content.slice(0, offset) + text + seg.content.slice(offset);
+        } else {
+            // At a paste boundary — create new text segment
+            const insertIdx = (seg?.type === "paste" && offset === seg.content.length)
+                ? segIdx + 1
+                : segIdx;
+            // Try to merge with adjacent text segment
+            const prev = insertIdx > 0 ? this.editSegments[insertIdx - 1] : undefined;
+            if (prev && prev.type === "text" && offset === 0) {
+                // Appending to end of previous text segment
+                prev.content += text;
+            } else {
+                this.editSegments.splice(insertIdx, 0, { type: "text", content: text });
+            }
+        }
+        this.cursorPos += text.length;
+    }
+
+    /** Delete character/segment before cursor. */
+    deleteBeforeCursor(): void {
+        if (this.cursorPos <= 0) return;
+
+        const { segIdx, offset } = this.getSegmentAtPos(this.cursorPos - 1);
+        const seg = this.editSegments[segIdx];
+        if (!seg) return;
+
+        if (seg.type === "paste") {
+            // Remove entire paste segment
+            this.cursorPos -= seg.content.length;
+            this.editSegments.splice(segIdx, 1);
+        } else {
+            seg.content = seg.content.slice(0, offset) + seg.content.slice(offset + 1);
+            this.cursorPos--;
+            if (seg.content.length === 0) {
+                this.editSegments.splice(segIdx, 1);
+            }
+        }
+    }
+
+    // --- Content area helpers ---
+
     private computeLineInfos(
         contentLines: string[],
         width: number,
@@ -304,9 +468,7 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
         if (totalLines === 0) return { infos: [], flatIndex: [] };
 
         const lineNumWidth = String(totalLines).length;
-        // Effective content width: Container(width) → Box(padX=1) → Text(padX=1) = width-4
         const effectiveTextWidth = Math.max(1, width - 4);
-        // Visible width of prefix like "  1 │ " = lineNumWidth + 3
         const prefixVisWidth = lineNumWidth + 3;
         const textContentWidth = Math.max(1, effectiveTextWidth - prefixVisWidth);
 
@@ -332,6 +494,48 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
         return { infos, flatIndex };
     }
 
+    /**
+     * Build the display buffer from segments (replacing paste content with
+     * placeholders) and the content↔display position mapping.
+     */
+    private buildDisplayMapping(): {
+        display: string;
+        contentToDisp: number[];
+        dispToContent: number[];
+    } {
+        let display = "";
+        const contentToDisp: number[] = [];
+        const dispToContent: number[] = [];
+        let cPos = 0;
+
+        for (const seg of this.editSegments) {
+            if (seg.type === "paste") {
+                const dStart = display.length;
+                // Content start maps to display start
+                contentToDisp[cPos] = dStart;
+                // All placeholder chars map to paste start content position
+                for (let di = 0; di < seg.display.length; di++) {
+                    dispToContent[dStart + di] = cPos;
+                }
+                display += seg.display;
+                // Content end maps to display end
+                const dEnd = display.length;
+                cPos += seg.content.length;
+                contentToDisp[cPos] = dEnd;
+                dispToContent[dEnd] = cPos;
+            } else {
+                for (let i = 0; i < seg.content.length; i++) {
+                    contentToDisp[cPos + i] = display.length + i;
+                    dispToContent[display.length + i] = cPos + i;
+                }
+                display += seg.content;
+                cPos += seg.content.length;
+            }
+        }
+
+        return { display, contentToDisp, dispToContent };
+    }
+
     private rebuildContent(width: number): void {
         if (!this.theme) return;
 
@@ -348,32 +552,26 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
 
             const totalVisual = flatIndex.length;
 
-            // Clamp scroll offset to valid range
             const maxOffset = Math.max(0, totalVisual - this.maxContentLines);
             const start = Math.max(0, Math.min(this.scrollOffset, maxOffset));
             this.scrollOffset = start;
             const end = Math.min(totalVisual, start + this.maxContentLines);
 
-            // Prefixes
             const lineNumWidth = String(totalLogicalLines).length;
             const numPrefix = (idx: number) =>
                 this.theme!.fg("dim", String(idx + 1).padStart(lineNumWidth) + " │ ");
             const contPrefix = this.theme!.fg("dim", " ".repeat(lineNumWidth) + " │ ");
             const ellipsisPrefix = this.theme!.fg("dim", " ".repeat(Math.max(0, lineNumWidth - 1)) + "… │ ");
 
-            // Render visible visual rows
             for (let vi = start; vi < end; vi++) {
                 const entry = flatIndex[vi]!;
                 let prefix: string;
 
                 if (entry.partIdx === 0) {
-                    // First visual row of a logical line — numbered prefix
                     prefix = numPrefix(entry.logicalIdx);
                 } else if (vi === start) {
-                    // Continuation row is the first visible row — ellipsis prefix
                     prefix = ellipsisPrefix;
                 } else {
-                    // Normal continuation — blank prefix
                     prefix = contPrefix;
                 }
 
@@ -381,7 +579,6 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
                 this.contentBox.addChild(new Text(prefix + content, 1, 0));
             }
 
-            // Scroll indicator — only when not all visual rows fit
             if (totalVisual > this.maxContentLines) {
                 const firstLogical = flatIndex[start]!.logicalIdx + 1;
                 const lastLogical = flatIndex[end - 1]!.logicalIdx + 1;
@@ -414,83 +611,7 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
                 : "  ";
 
             if (isEditing) {
-                // Edit mode: render label + buffer with line wrapping
-                const label = this.theme!.fg("accent", item.label);
-                const buffer = this.editBuffer;
-                const hasContent = buffer.length > 0;
-                const visualCursor = "\x1b[7m \x1b[27m";
-                const marker = this._focused ? CURSOR_MARKER : "";
-
-                // Content width: Container(width) → Box(padX=1) → Text(padX=1) = width-4
-                const contentWidth = Math.max(1, width - 4);
-                // Visible widths of prefix and label (may contain ANSI codes)
-                const prefixVisWidth = visibleWidth(prefix);
-
-                if (!hasContent) {
-                    // Empty buffer — single line with placeholder
-                    const placeholder = this.theme!.fg("dim", item.placeholder ?? this.messagePlaceholder);
-                    this.contentBox.addChild(new Text(
-                        `${prefix}${label}${this.messageSeparator}${marker}${visualCursor}${placeholder}`,
-                        1, 0,
-                    ));
-                } else {
-                    // Buffer with content — wrap across visual lines
-                    const labelWithSep = `${label}${this.messageSeparator}`;
-                    const labelSepVisWidth = visibleWidth(labelWithSep);
-                    const totalPrefixVisWidth = prefixVisWidth + labelSepVisWidth;
-
-                    // First line buffer width: contentWidth minus prefix and label+sep visible widths
-                    const firstBufWidth = Math.max(1, contentWidth - totalPrefixVisWidth);
-                    // Continuation lines: align with first line's text start
-                    const contPadWidth = totalPrefixVisWidth;
-                    const contIndent = " ".repeat(contPadWidth);
-                    const contLineWidth = Math.max(1, contentWidth - contPadWidth);
-
-                    // Build display buffer: replace large paste segments with placeholders
-                    const displayBuffer = this.editSegments.map(s => {
-                        if (s.type === "paste" && s.display) return s.display;
-                        return s.content;
-                    }).join("");
-                    const bufferLines = displayBuffer.split("\n");
-                    let isFirstVisualLine = true;
-
-                    for (let bi = 0; bi < bufferLines.length; bi++) {
-                        const bufLine = bufferLines[bi]!;
-                        const isLastBufLine = bi === bufferLines.length - 1;
-                        const baseWrapWidth = isFirstVisualLine ? firstBufWidth : contLineWidth;
-                        // Reserve 1 char for the visualCursor on the last buffer line
-                        const wrapWidth = isLastBufLine ? Math.max(1, baseWrapWidth - 1) : baseWrapWidth;
-
-                        // Use a space-preserving wrap for the edit buffer.
-                        // wrapTextWithAnsi trims trailing spaces which makes
-                        // in-progress typing (e.g. trailing spaces) invisible.
-                        const parts = bufLine.length === 0
-                            ? [""]
-                            : wrapPreservingSpaces(bufLine, wrapWidth);
-
-                        for (let wi = 0; wi < parts.length; wi++) {
-                            const isLastPart = isLastBufLine && wi === parts.length - 1;
-                            let linePrefix: string;
-                            let lineContent: string;
-
-                            if (isFirstVisualLine) {
-                                linePrefix = prefix;
-                                lineContent = labelWithSep;
-                                isFirstVisualLine = false;
-                            } else {
-                                linePrefix = contIndent;
-                                lineContent = "";
-                            }
-
-                            lineContent += parts[wi]!;
-                            if (isLastPart) {
-                                lineContent += `${marker}${visualCursor}`;
-                            }
-
-                            this.contentBox.addChild(new Text(`${linePrefix}${lineContent}`, 1, 0));
-                        }
-                    }
-                }
+                this.renderEditArea(item, prefix, width);
             } else {
                 const label = isCursor
                     ? this.theme!.fg("accent", item.label)
@@ -509,6 +630,202 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
         this.contentBox.addChild(
             new Text(this.theme!.fg("muted", `  ${helpText}`), 1, 0),
         );
+    }
+
+    /** Render the edit area for the selected item with cursor navigation support. */
+    private renderEditArea(item: SelectMessageItem<T>, prefix: string, width: number): void {
+        const label = this.theme!.fg("accent", item.label);
+        const buffer = this.editBuffer;
+        const hasContent = buffer.length > 0;
+        const marker = this._focused ? CURSOR_MARKER : "";
+        const visualCursor = "\x1b[7m \x1b[27m";
+        const isAtEnd = this.cursorPos >= buffer.length;
+
+        // Content width: Container(width) → Box(padX=1) → Text(padX=1) = width-4
+        const contentWidth = Math.max(1, width - 4);
+        const prefixVisWidth = visibleWidth(prefix);
+
+        if (!hasContent) {
+            // Empty buffer — cursor at start
+            const placeholder = this.theme!.fg("dim", item.placeholder ?? this.messagePlaceholder);
+            this.contentBox.addChild(new Text(
+                `${prefix}${label}${this.messageSeparator}${marker}${visualCursor}${placeholder}`,
+                1, 0,
+            ));
+            // Store minimal navigation state
+            this.editAllVisLines = [];
+            this.editVisLines = [];
+            this.editDispToContent = [];
+            this.editCursorDispOff = 0;
+            this.editCursorVisLineIdx = 0;
+            return;
+        }
+
+        // Label and width calculations
+        const labelWithSep = `${label}${this.messageSeparator}`;
+        const labelSepVisWidth = visibleWidth(labelWithSep);
+        const totalPrefixVisWidth = prefixVisWidth + labelSepVisWidth;
+
+        // -1 to leave room for the cursor character on every visual line
+        const firstBufWidth = Math.max(1, contentWidth - totalPrefixVisWidth - 1);
+        const contPadWidth = totalPrefixVisWidth;
+        const contIndent = " ".repeat(contPadWidth);
+        const contLineWidth = Math.max(1, contentWidth - contPadWidth - 1);
+
+        // Build display buffer with content↔display mapping
+        const { display, contentToDisp, dispToContent } = this.buildDisplayMapping();
+
+        // Store for up/down navigation
+        this.editDispToContent = dispToContent;
+        this.editCursorDispOff = contentToDisp[this.cursorPos] ?? display.length;
+
+        // Wrap display buffer into visual lines, tracking display offsets
+        const displayLines = display.split("\n");
+        const allVisLines: EditVisLine[] = [];
+        let dOff = 0;
+        let firstVis = true;
+
+        for (let li = 0; li < displayLines.length; li++) {
+            const dLine = displayLines[li]!;
+            const wrapWidth = firstVis ? firstBufWidth : contLineWidth;
+            const parts = dLine.length === 0 ? [""] : wrapPreservingSpaces(dLine, wrapWidth);
+
+            let lineDOff = dOff;
+            for (const part of parts) {
+                allVisLines.push({
+                    dispStart: lineDOff,
+                    dispEnd: lineDOff + part.length,
+                    text: part,
+                    isFirst: firstVis,
+                    truncOffset: 0,
+                });
+                lineDOff += part.length;
+                firstVis = false;
+            }
+            // Account for the \n character in display offsets
+            dOff += dLine.length + (li < displayLines.length - 1 ? 1 : 0);
+        }
+
+        // Find cursor's visual line (use < for exclusive dispEnd)
+        const cursorDispOff = this.editCursorDispOff;
+        let cursorVisLineIdx = allVisLines.findIndex(vl =>
+            cursorDispOff >= vl.dispStart && cursorDispOff < vl.dispEnd
+        );
+        if (cursorVisLineIdx === -1) {
+            // Cursor at end of buffer (past all dispEnds) — use last line
+            cursorVisLineIdx = allVisLines.length - 1;
+        }
+
+        // Apply line limit: show window that includes cursor's visual line
+        const maxEditLines = 3;
+        let startLine: number;
+        if (allVisLines.length <= maxEditLines) {
+            startLine = 0;
+        } else {
+            startLine = Math.max(0, Math.min(
+                cursorVisLineIdx,
+                allVisLines.length - maxEditLines,
+            ));
+        }
+        const endLine = Math.min(allVisLines.length, startLine + maxEditLines);
+        const visibleVisLines = allVisLines.slice(startLine, endLine);
+
+        // Compute truncation offset for the first visible line when truncated.
+        // When the first line is truncated, the "…" replaces `firstBufWidth` display chars
+        // with 1 visible char. Navigation needs to account for this offset.
+        const isTruncated = startLine > 0;
+        if (isTruncated && visibleVisLines.length > 0) {
+            const firstVl = visibleVisLines[0]!;
+            // If the first visible line is the original first line (with label prefix),
+            // the displayed text is label + "…" + (text from mid-line onwards).
+            // The truncation hides chars from the start of the original first line's text.
+            // Figure out how many display chars of the first line are hidden.
+            if (firstVl.isFirst) {
+                // Show "…" (1 col) + tail of first line text.
+                // We skip 1 char from the start of the text to make room for "…".
+                firstVl.truncOffset = 1;
+            }
+        }
+
+        // Store all visual lines and cursor index for up/down navigation
+        this.editAllVisLines = allVisLines;
+        this.editCursorVisLineIdx = cursorVisLineIdx;
+        // Store visible visual lines for rendering reference
+        this.editVisLines = visibleVisLines;
+
+        // Build Text components with cursor marker
+        for (let vi = 0; vi < visibleVisLines.length; vi++) {
+            const vl = visibleVisLines[vi]!;
+            const isCursorLine = (startLine + vi) === cursorVisLineIdx;
+        const isTruncatedTop = startLine > 0;
+        const isTruncatedBottom = endLine < allVisLines.length;
+
+            let linePrefix: string;
+            let prefixText: string; // text before the buffer content (label or "…")
+
+            if (vi === 0) {
+                // First rendered line always shows label
+                linePrefix = prefix;
+                if (isTruncatedTop) {
+                    prefixText = labelWithSep + "…";
+                } else if (vl.isFirst) {
+                    prefixText = labelWithSep;
+                } else {
+                    // Shouldn't happen (vi===0 implies first vis line), but fallback
+                    prefixText = labelWithSep;
+                }
+            } else {
+                linePrefix = contIndent;
+                prefixText = "";
+            }
+
+            // Append "…" suffix if this is the last visible line and there are more lines below
+            let suffixText = "";
+            if (vi === visibleVisLines.length - 1 && isTruncatedBottom) {
+                suffixText = "…";
+            }
+
+            // Compute the actual text to display for this visual line
+            let displayText = vl.text;
+            if (vl.truncOffset > 0) {
+                // Truncated: skip the hidden portion of text
+                displayText = vl.text.slice(vl.truncOffset);
+            }
+
+            if (isCursorLine) {
+                const cursorColInText = cursorDispOff - vl.dispStart - vl.truncOffset;
+                const insertAt = prefixText.length + Math.min(cursorColInText, displayText.length);
+
+                if (isAtEnd) {
+                    // Cursor at end of buffer — append marker + visual cursor + suffix
+                    this.contentBox.addChild(new Text(
+                        `${linePrefix}${prefixText}${displayText}${suffixText}${marker}${visualCursor}`,
+                        1, 0,
+                    ));
+                } else {
+                    // Cursor mid-line — highlight the character under the cursor
+                    const full = prefixText + displayText + suffixText;
+                    const charUnderCursor = full[insertAt];
+                    if (charUnderCursor) {
+                        const highlighted = `\x1b[7m${charUnderCursor}\x1b[27m`;
+                        this.contentBox.addChild(new Text(
+                            `${linePrefix}${full.slice(0, insertAt)}${marker}${highlighted}${full.slice(insertAt + 1)}`,
+                            1, 0,
+                        ));
+                    } else {
+                        this.contentBox.addChild(new Text(
+                            `${linePrefix}${full}${marker}${visualCursor}`,
+                            1, 0,
+                        ));
+                    }
+                }
+            } else {
+                this.contentBox.addChild(new Text(
+                    `${linePrefix}${prefixText}${displayText}${suffixText}`,
+                    1, 0,
+                ));
+            }
+        }
     }
 }
 
@@ -568,9 +885,7 @@ export async function selectWithMessage<T>(
                 if (endIndex !== -1) {
                     const pasteContent = pasteBuffer.substring(0, endIndex);
                     if (component.editing) {
-                        // Normalize line endings, preserve newlines for multi-line paste
                         const cleanText = pasteContent.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-                        // Large paste threshold: multi-line or > 150 chars
                         const isLarge = cleanText.includes("\n") || cleanText.length > 150;
                         if (isLarge) {
                             const lineCount = cleanText.split("\n").length;
@@ -578,13 +893,14 @@ export async function selectWithMessage<T>(
                                 ? `[Pasted ${lineCount} lines]`
                                 : `[Pasted ${cleanText.length} chars]`;
                             component.editSegments.push({ type: "paste", content: cleanText, display });
+                            component.cursorPos = component.getContentLength();
                         } else {
-                            component.editSegments.push({ type: "text", content: cleanText });
+                            component.insertAtCursor(cleanText);
                         }
                         component.invalidate();
                     }
                     isInPaste = false;
-                    const remaining = pasteBuffer.substring(endIndex + 6); // 6 = length of \x1b[201~
+                    const remaining = pasteBuffer.substring(endIndex + 6);
                     pasteBuffer = "";
                     if (remaining) {
                         handleInput(remaining);
@@ -597,6 +913,7 @@ export async function selectWithMessage<T>(
                 if (matchesKey(key, "escape")) {
                     component.editing = false;
                     component.editSegments = [];
+                    component.cursorPos = 0;
                     component.invalidate();
                     return;
                 }
@@ -607,30 +924,38 @@ export async function selectWithMessage<T>(
                 }
 
                 if (matchesKey(key, "backspace")) {
-                    if (component.editSegments.length > 0) {
-                        const last = component.editSegments[component.editSegments.length - 1]!;
-                        if (last.type === "paste") {
-                            // Remove entire paste segment
-                            component.editSegments.pop();
-                        } else if (last.content.length > 0) {
-                            last.content = last.content.slice(0, -1);
-                            if (last.content.length === 0) {
-                                component.editSegments.pop();
-                            }
-                        }
-                    }
+                    component.deleteBeforeCursor();
+                    component.invalidate();
+                    return;
+                }
+
+                if (matchesKey(key, "left")) {
+                    component.moveCursorLeft();
+                    component.invalidate();
+                    return;
+                }
+
+                if (matchesKey(key, "right")) {
+                    component.moveCursorRight();
+                    component.invalidate();
+                    return;
+                }
+
+                if (matchesKey(key, "up")) {
+                    component.moveCursorUp();
+                    component.invalidate();
+                    return;
+                }
+
+                if (matchesKey(key, "down")) {
+                    component.moveCursorDown();
                     component.invalidate();
                     return;
                 }
 
                 if (key.length === 1 && key.charCodeAt(0) >= 32) {
-                    // Append to last text segment, or create a new one
-                    const last = component.editSegments[component.editSegments.length - 1];
-                    if (last && last.type === "text") {
-                        last.content += key;
-                    } else {
-                        component.editSegments.push({ type: "text", content: key });
-                    }
+                    component.insertAtCursor(key);
+                    component.desiredCol = null;
                     component.invalidate();
                 }
                 return;
@@ -680,6 +1005,7 @@ export async function selectWithMessage<T>(
             if (matchesKey(key, "tab")) {
                 component.editing = true;
                 component.editSegments = [];
+                component.cursorPos = 0;
                 component.invalidate();
                 return;
             }
