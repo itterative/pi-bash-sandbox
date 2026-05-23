@@ -145,8 +145,6 @@ interface EditVisLine {
     dispStart: number;  // start offset in display string
     dispEnd: number;    // end offset (exclusive) in display string
     text: string;       // visible text (plain, no prefix)
-    isFirst: boolean;   // is the very first visual line of the edit area
-    truncOffset: number; // display chars skipped due to truncation (0 if not truncated)
 }
 
 // ─── SelectWithMessageComponent ──────────────────────────────────────
@@ -711,18 +709,15 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
     private buildEditVisualLines(
         display: string,
         cursorDispOff: number,
-        firstBufWidth: number,
-        contLineWidth: number,
+        lineWidth: number,
     ): { allVisLines: EditVisLine[]; cursorVisLineIdx: number } {
         const displayLines = display.split("\n");
         const allVisLines: EditVisLine[] = [];
         let dOff = 0;
-        let firstVis = true;
 
         for (let li = 0; li < displayLines.length; li++) {
             const dLine = displayLines[li]!;
-            const wrapWidth = firstVis ? firstBufWidth : contLineWidth;
-            const parts = dLine.length === 0 ? [""] : wrapPreservingSpaces(dLine, wrapWidth);
+            const parts = dLine.length === 0 ? [""] : wrapPreservingSpaces(dLine, lineWidth);
 
             let lineDOff = dOff;
             for (const part of parts) {
@@ -730,11 +725,8 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
                     dispStart: lineDOff,
                     dispEnd: lineDOff + part.length,
                     text: part,
-                    isFirst: firstVis,
-                    truncOffset: 0,
                 });
                 lineDOff += part.length;
-                firstVis = false;
             }
             // Account for the \n character in display offsets
             dOff += dLine.length + (li < displayLines.length - 1 ? 1 : 0);
@@ -785,8 +777,7 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
         const totalPrefixVisWidth = prefixVisWidth + visibleWidth(labelWithSep);
 
         // -1 to leave room for the cursor character on every visual line
-        const firstBufWidth = Math.max(1, contentWidth - totalPrefixVisWidth - 1);
-        const contLineWidth = Math.max(1, contentWidth - totalPrefixVisWidth - 1);
+        const editLineWidth = Math.max(1, contentWidth - totalPrefixVisWidth - 1);
 
         // Build display buffer with content↔display mapping
         const { display, contentToDisp, dispToContent } = this.buildDisplayMapping();
@@ -799,8 +790,7 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
         const { allVisLines, cursorVisLineIdx } = this.buildEditVisualLines(
             display,
             this.editCursorDispOff,
-            firstBufWidth,
-            contLineWidth,
+            editLineWidth,
         );
 
         // Apply line limit: show window that includes cursor's visual line.
@@ -819,18 +809,11 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
         const endLine = Math.min(allVisLines.length, startLine + MAX_EDIT_LINES);
         const visibleVisLines = allVisLines.slice(startLine, endLine);
 
-        // When truncated at top, the first visible line shows "…" in the prefix,
-        // which adds ELLIPSIS_VISUAL_WIDTH extra chars. Remove that many chars
-        // from the start of the displayed text so the line doesn't overflow.
-        const isTruncatedTop = startLine > 0;
-        if (isTruncatedTop && visibleVisLines.length > 0) {
-            visibleVisLines[0]!.truncOffset = ELLIPSIS_VISUAL_WIDTH;
-        }
-
         // Store navigation state
         this.editAllVisLines = allVisLines;
         this.editCursorVisLineIdx = cursorVisLineIdx;
 
+        const isTruncatedTop = startLine > 0;
         const isTruncatedBottom = endLine < allVisLines.length;
 
         // Build Text components with cursor marker
@@ -860,14 +843,10 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
                 suffixText = "…";
             }
 
-            // Compute the actual text to display for this visual line
-            let displayText = vl.text;
-            if (vl.truncOffset > 0) {
-                displayText = vl.text.slice(vl.truncOffset);
-            }
-
             if (isCursorLine) {
-                const cursorColInText = Math.max(0, this.editCursorDispOff - vl.dispStart - vl.truncOffset);
+                // Cursor is never on a truncated line, so displayText is the full text
+                const displayText = vl.text;
+                const cursorColInText = this.editCursorDispOff - vl.dispStart;
                 const insertAt = prefixText.length + Math.min(cursorColInText, displayText.length);
 
                 if (isAtEnd) {
@@ -894,6 +873,16 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
                     }
                 }
             } else {
+                // For truncated lines, slice off chars to make room for the
+                // "…" prefix/suffix without overflow.
+                let displayText = vl.text;
+                if (vi === 0 && isTruncatedTop) {
+                    // Top truncated: "…" prefix replaces first char
+                    displayText = vl.text.slice(ELLIPSIS_VISUAL_WIDTH);
+                } else if (vi === visibleVisLines.length - 1 && isTruncatedBottom) {
+                    // Bottom truncated: "…" suffix replaces last char
+                    displayText = vl.text.slice(0, vl.text.length - ELLIPSIS_VISUAL_WIDTH);
+                }
                 this.contentBox.addChild(new Text(
                     `${linePrefix}${prefixText}${displayText}${suffixText}`,
                     1, 0,
