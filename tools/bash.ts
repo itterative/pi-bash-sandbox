@@ -68,9 +68,9 @@ export default function registerBashToolHook(pi: ExtensionAPI) {
 
 When requesting to run bash commands, the user may attach a note explaining their decision. These notes appear:
 - For blocked commands: in the block reason
-- For allowed commands: prefixed with \`[User note: ...]\` at the start of the command output
+- For allowed commands: inside \`<user_note>\` tags at the start of the command output
 
-Pay attention to these notes as they provide context abot the user's preferences and concerns.
+Pay attention to these notes as they provide context about the user's preferences and concerns.
 `,
         };
     });
@@ -197,7 +197,11 @@ Pay attention to these notes as they provide context abot the user's preferences
         if (!userMessage) return;
 
         // Prepend user message to the result content
-        const note = `[User note: ${userMessage}]`;
+        const trimmed = userMessage.trim();
+        const hasNewlines = trimmed.includes("\n");
+        const note = hasNewlines
+            ? `<user_note>\nThe user has made a note: ${trimmed}\n</user_note>`
+            : `<user_note>The user has made a note: ${trimmed}</user_note>`;
         return {
             content: [
                 { type: "text", text: note },
