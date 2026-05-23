@@ -101,6 +101,16 @@ Uses `editAllVisLines` and `editCursorVisLineIdx` (absolute, not windowed):
 - Both `deleteBeforeCursor` and `deleteAfterCursor` handle segment boundary peeking
 - Removed commented-out debug `ctx.ui.notify` in `tools/bash.ts`
 
+## Cleanup Pass (Session 3)
+All input handling moved into `SelectWithMessageComponent`. No more public mutable fields or wrapper closure.
+- `wrapPreservingSpaces` + `findHardBreakIndex` moved to `common/text.ts`
+- Magic numbers extracted as constants (`HORIZONTAL_PADDING`, `MAX_EDIT_LINES`, `LARGE_PASTE_THRESHOLD`, `ELLIPSIS_VISUAL_WIDTH`)
+- `buildEditVisualLines` extracted from `renderEditArea` (visual line building + cursor location)
+- `confirmSelection` moved into class
+- Component returned directly from `ctx.ui.custom` (no wrapper needed)
+- Dead `editVisLines` field removed
+- `done` callback uses definite assignment (`!`) instead of `| null`
+
 ## Delete Operations
 - `deleteBeforeCursor()` — backspace. At text segment boundary (offset 0), peeks at previous segment. Removes paste atomically. Merges adjacent text segments via `removeSegmentAndMerge()`.
 - `deleteAfterCursor()` — forward delete (Delete key). At text segment boundary (offset === length), peeks at next segment. Same paste + merge logic.

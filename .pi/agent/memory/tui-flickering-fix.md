@@ -91,4 +91,17 @@ Added full cursor navigation in edit mode: ←/→ moves by character (paste seg
 
 ## Files Changed
 - `components/select-with-message.ts` — full rewrite with all features
+- `common/text.ts` — added `wrapPreservingSpaces` and `findHardBreakIndex`
 - `.pi/agent/memory/edit-cursor-navigation.md` — cursor navigation design doc
+
+## Cleanup Pass (Session 3)
+- Extracted magic numbers as named constants (`HORIZONTAL_PADDING`, `CONTENT_BOX_PAD_X/Y`, `MAX_EDIT_LINES`, `LARGE_PASTE_THRESHOLD`, `ELLIPSIS_VISUAL_WIDTH`)
+- Moved `wrapPreservingSpaces` + `findHardBreakIndex` to `common/text.ts` (general text utilities, not component-specific)
+- Removed dead `editVisLines` field (only `editAllVisLines` was used by navigation)
+- Moved all input handling (`handlePasteInput`, `handleEditInput`, `handleSelectInput`) into the class — eliminated all `public` mutable fields
+- Moved `confirmSelection` into the class as a private method
+- Extracted `buildEditVisualLines` from `renderEditArea` (wraps display buffer into visual lines, locates cursor)
+- Simplified `selectWithMessage` wrapper — returns the component directly (no wrapper closure needed)
+- Changed `done` callback from `| null` to definite assignment assertion
+- Replaced hardcoded `4` padding with `HORIZONTAL_PADDING` constant; `1` truncation offset with `ELLIPSIS_VISUAL_WIDTH`
+- Removed redundant `if (!this.theme) return` in `rebuildContent` (guaranteed by `render()` throw)
