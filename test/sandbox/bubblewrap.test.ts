@@ -190,7 +190,27 @@ describe("bubblewrap", () => {
     });
 
     describe("clearenv behavior", () => {
-        it("should include --clearenv in the command", () => {
+        it("should include --clearenv when inheritEnv is defined", () => {
+            const testConfig = writeProjectConfig({
+                sandbox: {
+                    mounts: {},
+                    inheritEnv: {},
+                },
+                permissions: {},
+            });
+
+            const options: SandboxOptions = {
+                env: { HOME: "/home/testuser", PATH: "/usr/bin", USER: "testuser" },
+                cwd: projectDir,
+                config: testConfig,
+            };
+
+            const result = sandbox("bwrap", "echo hello", options);
+
+            expect(result).toContain("--clearenv");
+        });
+
+        it("should NOT include --clearenv when inheritEnv is not defined", () => {
             const testConfig = writeProjectConfig({
                 sandbox: { mounts: {} },
                 permissions: {},
@@ -204,7 +224,7 @@ describe("bubblewrap", () => {
 
             const result = sandbox("bwrap", "echo hello", options);
 
-            expect(result).toContain("--clearenv");
+            expect(result).not.toContain("--clearenv");
         });
     });
 
