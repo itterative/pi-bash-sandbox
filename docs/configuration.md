@@ -7,7 +7,7 @@ Configuration is stored in JSON files at:
 
 The project-level config is merged with the global config, with project settings taking precedence. This allows you to have a base configuration globally and override specific settings per project.
 
-_When no configuration exists, all commands default to `"ask"`, prompting you for each command._
+_When no configuration exists, all commands default to `"ask"`, prompting you for each command. You can change this default using `"**"` in permissions — see [Permissions](./permissions.md)._ 
 
 ## JSON Schema
 

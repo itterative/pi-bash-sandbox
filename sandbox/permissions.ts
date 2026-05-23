@@ -33,6 +33,7 @@ type PermissionMatch = {
 export type Permission = "deny" | "ask" | "allow" | "allow:sandbox";
 
 let permissions: PermissionMatch[] = [];
+let defaultPermission: Permission = "ask";
 
 let config: SandboxConfigPermissions | null = null;
 
@@ -288,10 +289,17 @@ function getPermissions(
     }
 
     let _permissions: PermissionMatch[] = [];
+    let _defaultPermission: Permission = "ask";
 
     try {
         for (const permission of Object.entries(config)) {
             try {
+              // Handle "**" as the default permission (fallback when no pattern matches)
+              if (permission[0] === "**") {
+                  _defaultPermission = permission[1] as Permission;
+                  continue;
+              }
+
               // Handle empty permission key specially
               if (permission[0] === "" || permission[0].trim() === "") {
                   _permissions.push({
@@ -324,6 +332,7 @@ function getPermissions(
     }
 
     permissions = _permissions;
+    defaultPermission = _defaultPermission;
     return permissions;
 }
 
@@ -333,8 +342,9 @@ function getPermissions(
 function getSingleCommandPermission(
     commands: string[],
     permissions: PermissionMatch[],
+    fallback: Permission = "ask",
 ): Permission {
-    let match: Permission = "ask";
+    let match: Permission = fallback;
 
     // note: this will match the last one (similar to opencode)
     //       could also try a specificity approach
@@ -376,18 +386,18 @@ export default function getPermission(
 
     // Handle empty command as a special case for backward compatibility
     if (command === "" || command.trim() === "") {
-        return getSingleCommandPermission([""], permissions);
+        return getSingleCommandPermission([""], permissions, defaultPermission);
     }
 
     const parsedCommands = parseBash(command);
 
     if (parsedCommands.length === 0) {
-        return "ask";
+        return defaultPermission;
     }
 
     // Return the most restrictive permission across all commands
     return parsedCommands.reduce<Permission>((mostRestrictive, cmd) => {
-        const perm = getSingleCommandPermission(cmd, permissions);
+        const perm = getSingleCommandPermission(cmd, permissions, defaultPermission);
         return moreRestrictive(mostRestrictive, perm);
     }, "allow");
 }

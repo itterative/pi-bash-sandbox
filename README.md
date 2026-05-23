@@ -5,7 +5,7 @@ Bash sandboxing for pi - a secure way to execute shell commands with configurabl
 ## Features
 
 - **Sandboxed command execution** using [bubblewrap](https://github.com/containers/bubblewrap)
-- **Configurable permissions** - allow, deny, ask, or sandbox specific commands
+- **Configurable permissions** - allow, deny, ask, or sandbox specific commands; set a default with `**`
 - **Filesystem isolation** - bind-mounted directories with read-only or read-write access
 - **Pattern-based matching** - use wildcards to match command patterns
 - **User notes** - add context to your decisions that the agent can see
@@ -39,6 +39,8 @@ Configuration is stored in JSON files:
 - Project level: `.pi/bash-sandbox-config.json`
 - Global level: `~/.pi/bash-sandbox-config.json`
 
+By default, commands that don't match any permission pattern will prompt you (`ask`). Set `"**"` to change the default — see [Default Permission](./docs/permissions.md#default-permission).
+
 ### Quick Example
 
 ```json
@@ -51,6 +53,7 @@ Configuration is stored in JSON files:
         "homeMounts": [".bashrc", ".config/git"]
     },
     "permissions": {
+        "**": "allow:sandbox",
         "cd *": "allow",
         "ls *": "allow",
         "npm run *": "allow",

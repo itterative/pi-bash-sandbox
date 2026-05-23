@@ -29,6 +29,23 @@ Your note is shared with the agent to provide context about your preferences:
 - **Allowed commands**: The note is prefixed with `[User note: ...]` at the start of the command output
 - **Audit log**: Notes are stored with allowed commands for later review
 
+## Default Permission (`**`)
+
+By default, commands that don't match any permission pattern fall back to `ask`. You can change this default using the special `**` key:
+
+```json
+{
+    "permissions": {
+        "**": "allow:sandbox",
+        "sudo *": "deny"
+    }
+}
+```
+
+This configuration allows all unknown commands in the sandbox by default, while still denying `sudo`. Specific patterns override the `**` default (last-match-wins still applies).
+
+`**` is not a glob pattern — it's a special key that sets the fallback permission for any command that doesn't match another rule.
+
 ## Pattern Matching
 
 Permissions use wildcard patterns where `*` matches zero or more characters within an argument.

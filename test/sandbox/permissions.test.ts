@@ -24,6 +24,23 @@ describe("getPermission", () => {
         ]);
     });
 
+    describe('"**" default permission', () => {
+        runTests([
+            { desc: "** allows unknown commands by default", command: "some-command", permissions: { "**": "allow" }, expected: "allow" },
+            { desc: "** allow:sandbox for unknown commands", command: "some-command", permissions: { "**": "allow:sandbox" }, expected: "allow:sandbox" },
+            { desc: "** deny as default", command: "some-command", permissions: { "**": "deny" }, expected: "deny" },
+            { desc: "** ask as default (explicit)", command: "some-command", permissions: { "**": "ask" }, expected: "ask" },
+            { desc: "** does not override specific patterns", command: "rm -rf /", permissions: { "**": "allow:sandbox", "rm *": "deny" }, expected: "deny" },
+            { desc: "** applies to multi-line commands with no match", command: "unknown1\nunknown2", permissions: { "**": "allow:sandbox" }, expected: "allow:sandbox" },
+            { desc: "** with specific allow, unmatched command gets **", command: "ls -la", permissions: { "**": "allow:sandbox", "npm *": "allow" }, expected: "allow:sandbox" },
+            { desc: "** at top, specific overrides below", command: "sudo apt update", permissions: { "**": "allow:sandbox", "sudo *": "deny" }, expected: "deny" },
+            { desc: "** with empty command", command: "", permissions: { "**": "allow" }, expected: "allow" },
+            { desc: "** does not match as a glob pattern", command: "**", permissions: { "**": "allow:sandbox", "*": "deny" }, expected: "deny" },
+            { desc: "** allow:sandbox is more restrictive than allow from match", command: "ls\nunknown", permissions: { "**": "allow:sandbox", "ls": "allow" }, expected: "allow:sandbox" },
+            { desc: "** deny overrides matched allow", command: "ls\nunknown", permissions: { "**": "deny", "ls": "allow" }, expected: "deny" },
+        ]);
+    });
+
     describe("exact matches", () => {
         runTests([
             { desc: "allow", command: "ls -la", permissions: { "ls -la": "allow" }, expected: "allow" },
