@@ -44,6 +44,7 @@ import {
     matchesKey,
     Spacer,
     Text,
+    visibleWidth,
     wrapTextWithAnsi,
 } from "@mariozechner/pi-tui";
 
@@ -99,6 +100,89 @@ interface LogicalLineInfo {
 interface FlatEntry {
     logicalIdx: number;
     partIdx: number;
+}
+
+/**
+ * Wrap a single-line string at word boundaries, preserving trailing spaces.
+ * Unlike wrapTextWithAnsi which trims trailing whitespace on wrapped lines,
+ * this function keeps spaces intact so in-progress typing (e.g. trailing
+ * spaces) remains visible in the edit buffer.
+ */
+function wrapPreservingSpaces(text: string, width: number): string[] {
+    if (width <= 0) return [text || ""];
+    const visLen = visibleWidth(text);
+    if (visLen <= width) return [text];
+
+    const lines: string[] = [];
+    let remaining = text;
+
+    while (visibleWidth(remaining) > width) {
+        // Find the break point: last space that fits within width
+        // Walk character-by-character tracking visible width
+        let breakAt = -1;
+        let visPos = 0;
+        let lastSpaceVisEnd = -1; // visible width at end of last space
+        let lastSpaceStrIdx = -1; // string index after last space
+
+        for (let si = 0; si < remaining.length; si++) {
+            const ch = remaining.codePointAt(si)!;
+            // Skip over ANSI escape sequences
+            if (ch === 0x1b && remaining[si + 1] === "[") {
+                const endSeq = remaining.indexOf("m", si + 2);
+                if (endSeq !== -1) {
+                    si = endSeq;
+                    continue;
+                }
+            }
+            const charWidth = ch > 0xffff ? 2 : 1; // simplified: treat non-BMP as wide
+            const nextVisPos = visPos + charWidth;
+
+            if (nextVisPos > width) {
+                break;
+            }
+
+            if (ch === 32) { // space
+                lastSpaceVisEnd = nextVisPos;
+                lastSpaceStrIdx = si + 1;
+            }
+            visPos = nextVisPos;
+        }
+
+        if (lastSpaceStrIdx > 0) {
+            // Break after the last space that fits
+            lines.push(remaining.substring(0, lastSpaceStrIdx));
+            remaining = remaining.substring(lastSpaceStrIdx);
+        } else {
+            // No space to break at — hard-break at width (find string index)
+            let hardIdx = 0;
+            let hv = 0;
+            for (let si = 0; si < remaining.length; si++) {
+                const ch = remaining.codePointAt(si)!;
+                if (ch === 0x1b && remaining[si + 1] === "[") {
+                    const endSeq = remaining.indexOf("m", si + 2);
+                    if (endSeq !== -1) {
+                        si = endSeq;
+                        continue;
+                    }
+                }
+                const cw = ch > 0xffff ? 2 : 1;
+                if (hv + cw > width) {
+                    hardIdx = si;
+                    break;
+                }
+                hv += cw;
+                hardIdx = si + 1;
+            }
+            lines.push(remaining.substring(0, hardIdx));
+            remaining = remaining.substring(hardIdx);
+        }
+    }
+
+    if (remaining.length > 0) {
+        lines.push(remaining);
+    }
+
+    return lines.length > 0 ? lines : [""];
 }
 
 /**
@@ -319,34 +403,89 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
                 ? this.theme!.fg("accent", "→ ")
                 : "  ";
 
-            let content: string;
-
             if (isEditing) {
+                // Edit mode: render label + buffer with line wrapping
                 const label = this.theme!.fg("accent", item.label);
                 const buffer = this.editBuffer;
                 const hasContent = buffer.length > 0;
-
                 const visualCursor = "\x1b[7m \x1b[27m";
                 const marker = this._focused ? CURSOR_MARKER : "";
 
-                if (hasContent) {
-                    content = `${label}${this.messageSeparator}${buffer}${marker}${visualCursor}`;
+                // Content width: Container(width) → Box(padX=1) → Text(padX=1) = width-4
+                const contentWidth = Math.max(1, width - 4);
+                // Visible widths of prefix and label (may contain ANSI codes)
+                const prefixVisWidth = visibleWidth(prefix);
+
+                if (!hasContent) {
+                    // Empty buffer — single line with placeholder
+                    const placeholder = this.theme!.fg("dim", item.placeholder ?? this.messagePlaceholder);
+                    this.contentBox.addChild(new Text(
+                        `${prefix}${label}${this.messageSeparator}${marker}${visualCursor}${placeholder}`,
+                        1, 0,
+                    ));
                 } else {
-                    const placeholderText = item.placeholder ?? this.messagePlaceholder;
-                    const placeholder = this.theme!.fg("dim", placeholderText);
-                    content = `${label}${this.messageSeparator}${marker}${visualCursor}${placeholder}`;
+                    // Buffer with content — wrap across visual lines
+                    const labelWithSep = `${label}${this.messageSeparator}`;
+                    const labelSepVisWidth = visibleWidth(labelWithSep);
+                    const totalPrefixVisWidth = prefixVisWidth + labelSepVisWidth;
+
+                    // First line buffer width: contentWidth minus prefix and label+sep visible widths
+                    const firstBufWidth = Math.max(1, contentWidth - totalPrefixVisWidth);
+                    // Continuation lines: align with first line's text start
+                    const contPadWidth = totalPrefixVisWidth;
+                    const contIndent = " ".repeat(contPadWidth);
+                    const contLineWidth = Math.max(1, contentWidth - contPadWidth);
+
+                    // Split by newlines (multi-line paste support)
+                    const bufferLines = buffer.split("\n");
+                    let isFirstVisualLine = true;
+
+                    for (let bi = 0; bi < bufferLines.length; bi++) {
+                        const bufLine = bufferLines[bi]!;
+                        const isLastBufLine = bi === bufferLines.length - 1;
+                        const baseWrapWidth = isFirstVisualLine ? firstBufWidth : contLineWidth;
+                        // Reserve 1 char for the visualCursor on the last buffer line
+                        const wrapWidth = isLastBufLine ? Math.max(1, baseWrapWidth - 1) : baseWrapWidth;
+
+                        // Use a space-preserving wrap for the edit buffer.
+                        // wrapTextWithAnsi trims trailing spaces which makes
+                        // in-progress typing (e.g. trailing spaces) invisible.
+                        const parts = bufLine.length === 0
+                            ? [""]
+                            : wrapPreservingSpaces(bufLine, wrapWidth);
+
+                        for (let wi = 0; wi < parts.length; wi++) {
+                            const isLastPart = isLastBufLine && wi === parts.length - 1;
+                            let linePrefix: string;
+                            let lineContent: string;
+
+                            if (isFirstVisualLine) {
+                                linePrefix = prefix;
+                                lineContent = labelWithSep;
+                                isFirstVisualLine = false;
+                            } else {
+                                linePrefix = contIndent;
+                                lineContent = "";
+                            }
+
+                            lineContent += parts[wi]!;
+                            if (isLastPart) {
+                                lineContent += `${marker}${visualCursor}`;
+                            }
+
+                            this.contentBox.addChild(new Text(`${linePrefix}${lineContent}`, 1, 0));
+                        }
+                    }
                 }
             } else {
                 const label = isCursor
                     ? this.theme!.fg("accent", item.label)
                     : item.label;
-
-                content = item.description
+                const content = item.description
                     ? `${label}${this.theme!.fg("muted", ` - ${item.description}`)}`
                     : label;
+                this.contentBox.addChild(new Text(`${prefix}${content}`, 1, 0));
             }
-
-            this.contentBox.addChild(new Text(`${prefix}${content}`, 1, 0));
         }
 
         this.contentBox.addChild(new Spacer(1));
@@ -397,7 +536,39 @@ export async function selectWithMessage<T>(
             });
         }
 
+        // Bracketed paste state
+        let pasteBuffer = "";
+        let isInPaste = false;
+
         function handleInput(key: string): void {
+            // Handle bracketed paste mode: \x1b[200~ starts, \x1b[201~ ends
+            if (key.includes("\x1b[200~")) {
+                isInPaste = true;
+                pasteBuffer = "";
+                key = key.replace("\x1b[200~", "");
+            }
+
+            if (isInPaste) {
+                pasteBuffer += key;
+                const endIndex = pasteBuffer.indexOf("\x1b[201~");
+                if (endIndex !== -1) {
+                    const pasteContent = pasteBuffer.substring(0, endIndex);
+                    if (component.editing) {
+                        // Normalize line endings, preserve newlines for multi-line paste
+                        const cleanText = pasteContent.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+                        component.editBuffer += cleanText;
+                        component.invalidate();
+                    }
+                    isInPaste = false;
+                    const remaining = pasteBuffer.substring(endIndex + 6); // 6 = length of \x1b[201~
+                    pasteBuffer = "";
+                    if (remaining) {
+                        handleInput(remaining);
+                    }
+                }
+                return;
+            }
+
             if (component.editing) {
                 if (matchesKey(key, "escape")) {
                     component.editing = false;
