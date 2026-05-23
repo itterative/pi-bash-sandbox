@@ -409,7 +409,38 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
 
     // --- Editing ---
 
-    /** Insert text at cursor position. */
+    /** Insert a segment (text or paste) at the cursor position. */
+    insertSegmentAtCursor(segment: EditSegment): void {
+        if (this.editSegments.length === 0) {
+            this.editSegments.push(segment);
+            this.cursorPos = segment.content.length;
+            return;
+        }
+
+        const { segIdx, offset } = this.getSegmentAtPos(this.cursorPos);
+        const seg = this.editSegments[segIdx];
+
+        if (seg && seg.type === "text") {
+            // Split the text segment at the cursor and insert between the halves
+            const before = seg.content.slice(0, offset);
+            const after = seg.content.slice(offset);
+            const spliceArgs: EditSegment[] = [];
+            if (before.length > 0) spliceArgs.push({ type: "text", content: before });
+            spliceArgs.push(segment);
+            if (after.length > 0) spliceArgs.push({ type: "text", content: after });
+            this.editSegments.splice(segIdx, 1, ...spliceArgs);
+        } else {
+            // At a paste boundary — insert adjacent to it
+            const insertIdx = (seg?.type === "paste" && offset === seg.content.length)
+                ? segIdx + 1
+                : segIdx;
+            this.editSegments.splice(insertIdx, 0, segment);
+        }
+
+        this.cursorPos += segment.content.length;
+    }
+
+    /** Insert plain text at cursor position, merging into adjacent text segments. */
     insertAtCursor(text: string): void {
         if (this.editSegments.length === 0) {
             this.editSegments.push({ type: "text", content: text });
@@ -421,7 +452,7 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
         const seg = this.editSegments[segIdx];
 
         if (seg && seg.type === "text") {
-            // Insert into existing text segment
+            // Insert directly into the existing text segment
             seg.content = seg.content.slice(0, offset) + text + seg.content.slice(offset);
         } else {
             // At a paste boundary — create new text segment
@@ -431,7 +462,6 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
             // Try to merge with adjacent text segment
             const prev = insertIdx > 0 ? this.editSegments[insertIdx - 1] : undefined;
             if (prev && prev.type === "text" && offset === 0) {
-                // Appending to end of previous text segment
                 prev.content += text;
             } else {
                 this.editSegments.splice(insertIdx, 0, { type: "text", content: text });
@@ -449,9 +479,16 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
         if (!seg) return;
 
         if (seg.type === "paste") {
-            // Remove entire paste segment
+            // Remove entire paste segment and merge adjacent text segments
             this.cursorPos -= seg.content.length;
-            this.editSegments.splice(segIdx, 1);
+            const before = segIdx > 0 ? this.editSegments[segIdx - 1] : undefined;
+            const after = this.editSegments[segIdx + 1];
+            if (before?.type === "text" && after?.type === "text") {
+                before.content += after.content;
+                this.editSegments.splice(segIdx, 2); // remove paste + after, before already merged
+            } else {
+                this.editSegments.splice(segIdx, 1);
+            }
         } else {
             seg.content = seg.content.slice(0, offset) + seg.content.slice(offset + 1);
             this.cursorPos--;
@@ -1029,8 +1066,7 @@ export async function selectWithMessage<T>(
                     const display = lineCount > 1
                         ? `[Pasted ${lineCount} lines]`
                         : `[Pasted ${cleanText.length} chars]`;
-                    component.editSegments.push({ type: "paste", content: cleanText, display });
-                    component.cursorPos = component.getContentLength();
+                    component.insertSegmentAtCursor({ type: "paste", content: cleanText, display });
                 } else {
                     component.insertAtCursor(cleanText);
                 }
