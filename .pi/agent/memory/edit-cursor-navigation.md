@@ -83,5 +83,18 @@ Uses `editAllVisLines` and `editCursorVisLineIdx` (absolute, not windowed):
 5. **Boundary findIndex:** Changed `<= dispEnd` to `< dispEnd` so cursor at exact boundary between lines maps to the correct line
 6. **Truncation prefix:** First rendered line always shows label; `…` added when lines hidden above or below
 
+## Cleanup Pass
+- Extracted `findHardBreakIndex()` helper from duplicated ANSI-scanning logic in `wrapPreservingSpaces`
+- Fixed surrogate pair handling in `wrapPreservingSpaces` (skip low surrogate with `si++`)
+- Hoisted loop-invariant `isTruncatedTop`/`isTruncatedBottom` outside render loop (fixed indentation bug)
+- Removed redundant `contPadWidth` alias (use `totalPrefixVisWidth` directly)
+- Made `messageSeparator` package-internal so `confirmSelection` doesn't recompute the default
+- Added explicit `public` on mutable state fields accessed from wrapper closure
+- Removed dead `handleInput` method from class (Component interface has it optional)
+- Split wrapper `handleInput` into `handlePasteInput` / `handleEditInput` / `handleSelectInput`
+- Paste handler only buffers in edit mode; outside edit mode, markers are consumed and discarded
+- Removed commented-out debug `ctx.ui.notify` in `tools/bash.ts`
+
 ## Files Changed
-- `components/select-with-message.ts` — cursor navigation implementation
+- `components/select-with-message.ts` — cursor navigation + cleanup
+- `tools/bash.ts` — removed debug line

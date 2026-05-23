@@ -179,11 +179,6 @@ Pay attention to these notes as they provide context about the user's preference
 
         if (sandboxed) {
             event.input.command = sandbox(bwrap, event.input.command);
-
-            // ctx.ui.notify(
-            //     `pi-bash-sandbox: wrapped command with bwrap:\n  ${event.input.command}\n`,
-            //     "info"
-            // );
         }
 
         return { block: false };

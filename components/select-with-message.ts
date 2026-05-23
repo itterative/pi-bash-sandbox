@@ -145,6 +145,8 @@ function wrapPreservingSpaces(text: string, width: number): string[] {
             }
             const charWidth = ch > 0xffff ? 2 : 1;
             visPos += charWidth;
+            // Skip low surrogate
+            if (ch > 0xffff) si++;
 
             if (visPos > width) {
                 break;
@@ -160,27 +162,9 @@ function wrapPreservingSpaces(text: string, width: number): string[] {
             remaining = remaining.substring(lastSpaceStrIdx);
         } else {
             // Hard break at width
-            let hardIdx = 0;
-            let hv = 0;
-            for (let si = 0; si < remaining.length; si++) {
-                const ch = remaining.codePointAt(si)!;
-                if (ch === 0x1b && remaining[si + 1] === "[") {
-                    const endSeq = remaining.indexOf("m", si + 2);
-                    if (endSeq !== -1) {
-                        si = endSeq;
-                        continue;
-                    }
-                }
-                const cw = ch > 0xffff ? 2 : 1;
-                if (hv + cw > width) {
-                    hardIdx = si;
-                    break;
-                }
-                hv += cw;
-                hardIdx = si + 1;
-            }
-            lines.push(remaining.substring(0, hardIdx));
-            remaining = remaining.substring(hardIdx);
+            const idx = findHardBreakIndex(remaining, width);
+            lines.push(remaining.substring(0, idx));
+            remaining = remaining.substring(idx);
         }
     }
 
@@ -189,6 +173,26 @@ function wrapPreservingSpaces(text: string, width: number): string[] {
     }
 
     return lines.length > 0 ? lines : [""];
+}
+
+/** Find the string index at which to hard-break `text` at the given visible width. */
+function findHardBreakIndex(text: string, width: number): number {
+    let hv = 0;
+    for (let si = 0; si < text.length; si++) {
+        const ch = text.codePointAt(si)!;
+        if (ch === 0x1b && text[si + 1] === "[") {
+            const endSeq = text.indexOf("m", si + 2);
+            if (endSeq !== -1) {
+                si = endSeq;
+                continue;
+            }
+        }
+        const cw = ch > 0xffff ? 2 : 1;
+        if (hv + cw > width) return si;
+        hv += cw;
+        if (ch > 0xffff) si++; // skip low surrogate
+    }
+    return text.length;
 }
 
 // Visual line info for cursor navigation
@@ -209,24 +213,24 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
     private theme: Theme | null = null;
     private readonly selectHelpText: string;
     private readonly editHelpText: string;
-    private readonly messageSeparator: string;
+    readonly messageSeparator: string;
     private readonly messagePlaceholder: string;
     private readonly maxContentLines: number;
     private done: ((result: SelectWithMessageResult<T> | undefined) => void) | null = null;
 
-    // Mutable state
-    cursor: number;
-    editing = false;
+    // Mutable state (public — accessed from the wrapper closure)
+    public cursor: number;
+    public editing = false;
     // Segment-based edit buffer
-    editSegments: EditSegment[] = [];
+    public editSegments: EditSegment[] = [];
     get editBuffer(): string {
         return this.editSegments.map(s => s.content).join("");
     }
 
     // Cursor position: flat offset into concatenated content (0 to totalLength)
-    cursorPos: number = 0;
+    public cursorPos: number = 0;
     // Desired column for vertical navigation (null = use actual)
-    desiredCol: number | null = null;
+    public desiredCol: number | null = null;
 
     // Stored during render for up/down navigation (all visual lines)
     private editAllVisLines: EditVisLine[] = [];
@@ -236,10 +240,10 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
     private editCursorVisLineIdx: number = 0;
 
     // Scroll offset for content area
-    scrollOffset = 0;
+    public scrollOffset = 0;
     // Computed during render, used by PgUp/PgDn
-    lineInfos: LogicalLineInfo[] = [];
-    flatIndex: FlatEntry[] = [];
+    public lineInfos: LogicalLineInfo[] = [];
+    public flatIndex: FlatEntry[] = [];
     private _focused = false;
 
     constructor(
@@ -303,9 +307,8 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
         this.container.invalidate();
     }
 
-    handleInput(key: string): void {
-        // Handled by the wrapper in selectWithMessage()
-    }
+    // Input handling is delegated to the wrapper returned by selectWithMessage().
+    // This class implements Component for its render/invalidate API only.
 
     // --- Segment / cursor helpers ---
 
@@ -668,9 +671,8 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
 
         // -1 to leave room for the cursor character on every visual line
         const firstBufWidth = Math.max(1, contentWidth - totalPrefixVisWidth - 1);
-        const contPadWidth = totalPrefixVisWidth;
-        const contIndent = " ".repeat(contPadWidth);
-        const contLineWidth = Math.max(1, contentWidth - contPadWidth - 1);
+        const contIndent = " ".repeat(totalPrefixVisWidth);
+        const contLineWidth = Math.max(1, contentWidth - totalPrefixVisWidth - 1);
 
         // Build display buffer with content↔display mapping
         const { display, contentToDisp, dispToContent } = this.buildDisplayMapping();
@@ -754,11 +756,12 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
         this.editVisLines = visibleVisLines;
 
         // Build Text components with cursor marker
+        const isTruncatedTop = startLine > 0;
+        const isTruncatedBottom = endLine < allVisLines.length;
+
         for (let vi = 0; vi < visibleVisLines.length; vi++) {
             const vl = visibleVisLines[vi]!;
             const isCursorLine = (startLine + vi) === cursorVisLineIdx;
-        const isTruncatedTop = startLine > 0;
-        const isTruncatedBottom = endLine < allVisLines.length;
 
             let linePrefix: string;
             let prefixText: string; // text before the buffer content (label or "…")
@@ -855,9 +858,8 @@ export async function selectWithMessage<T>(
             }
 
             const message = component.editBuffer.trim() || undefined;
-            const messageSeparator = options.messageSeparator ?? ", ";
             const displayText = message
-                ? `${item.label}${messageSeparator}${message}`
+                ? `${item.label}${component.messageSeparator}${message}`
                 : item.label;
 
             done({
@@ -867,101 +869,63 @@ export async function selectWithMessage<T>(
             });
         }
 
-        // Bracketed paste state
-        let pasteBuffer = "";
-        let isInPaste = false;
+        // --- Edit mode input handler ---
+        function handleEditInput(key: string): boolean {
+            if (!component.editing) return false;
 
-        function handleInput(key: string): void {
-            // Handle bracketed paste mode: \x1b[200~ starts, \x1b[201~ ends
-            if (key.includes("\x1b[200~")) {
-                isInPaste = true;
-                pasteBuffer = "";
-                key = key.replace("\x1b[200~", "");
+            if (matchesKey(key, "escape")) {
+                component.editing = false;
+                component.editSegments = [];
+                component.cursorPos = 0;
+                component.invalidate();
+                return true;
             }
 
-            if (isInPaste) {
-                pasteBuffer += key;
-                const endIndex = pasteBuffer.indexOf("\x1b[201~");
-                if (endIndex !== -1) {
-                    const pasteContent = pasteBuffer.substring(0, endIndex);
-                    if (component.editing) {
-                        const cleanText = pasteContent.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-                        const isLarge = cleanText.includes("\n") || cleanText.length > 150;
-                        if (isLarge) {
-                            const lineCount = cleanText.split("\n").length;
-                            const display = lineCount > 1
-                                ? `[Pasted ${lineCount} lines]`
-                                : `[Pasted ${cleanText.length} chars]`;
-                            component.editSegments.push({ type: "paste", content: cleanText, display });
-                            component.cursorPos = component.getContentLength();
-                        } else {
-                            component.insertAtCursor(cleanText);
-                        }
-                        component.invalidate();
-                    }
-                    isInPaste = false;
-                    const remaining = pasteBuffer.substring(endIndex + 6);
-                    pasteBuffer = "";
-                    if (remaining) {
-                        handleInput(remaining);
-                    }
-                }
-                return;
+            if (matchesKey(key, "enter")) {
+                confirmSelection();
+                return true;
             }
 
-            if (component.editing) {
-                if (matchesKey(key, "escape")) {
-                    component.editing = false;
-                    component.editSegments = [];
-                    component.cursorPos = 0;
-                    component.invalidate();
-                    return;
-                }
-
-                if (matchesKey(key, "enter")) {
-                    confirmSelection();
-                    return;
-                }
-
-                if (matchesKey(key, "backspace")) {
-                    component.deleteBeforeCursor();
-                    component.invalidate();
-                    return;
-                }
-
-                if (matchesKey(key, "left")) {
-                    component.moveCursorLeft();
-                    component.invalidate();
-                    return;
-                }
-
-                if (matchesKey(key, "right")) {
-                    component.moveCursorRight();
-                    component.invalidate();
-                    return;
-                }
-
-                if (matchesKey(key, "up")) {
-                    component.moveCursorUp();
-                    component.invalidate();
-                    return;
-                }
-
-                if (matchesKey(key, "down")) {
-                    component.moveCursorDown();
-                    component.invalidate();
-                    return;
-                }
-
-                if (key.length === 1 && key.charCodeAt(0) >= 32) {
-                    component.insertAtCursor(key);
-                    component.desiredCol = null;
-                    component.invalidate();
-                }
-                return;
+            if (matchesKey(key, "backspace")) {
+                component.deleteBeforeCursor();
+                component.invalidate();
+                return true;
             }
 
-            // Selection mode
+            if (matchesKey(key, "left")) {
+                component.moveCursorLeft();
+                component.invalidate();
+                return true;
+            }
+
+            if (matchesKey(key, "right")) {
+                component.moveCursorRight();
+                component.invalidate();
+                return true;
+            }
+
+            if (matchesKey(key, "up")) {
+                component.moveCursorUp();
+                component.invalidate();
+                return true;
+            }
+
+            if (matchesKey(key, "down")) {
+                component.moveCursorDown();
+                component.invalidate();
+                return true;
+            }
+
+            if (key.length === 1 && key.charCodeAt(0) >= 32) {
+                component.insertAtCursor(key);
+                component.desiredCol = null;
+                component.invalidate();
+            }
+            return true;
+        }
+
+        // --- Selection mode input handler ---
+        function handleSelectInput(key: string): void {
             if (matchesKey(key, "up") || key === "k") {
                 if (component.cursor > 0) {
                     component.cursor--;
@@ -1014,6 +978,73 @@ export async function selectWithMessage<T>(
                 done(undefined);
                 return;
             }
+        }
+
+        // --- Bracketed paste handler ---
+        // Only buffers paste data while in edit mode. Outside edit mode, paste
+        // markers and content are consumed and discarded so they don't leak as
+        // garbage keystrokes into handleSelectInput.
+        let pasteBuffer = "";
+        let isInPaste = false;
+
+        function handlePasteInput(key: string): boolean {
+            const hasPasteStart = key.includes("\x1b[200~");
+
+            // Not in paste and no start marker — not paste input
+            if (!isInPaste && !hasPasteStart) return false;
+
+            // Paste start received outside edit mode — consume and discard
+            if (hasPasteStart && !component.editing) {
+                const stripped = key.replace("\x1b[200~", "");
+                // If the end marker is in the same chunk, consume entirely
+                if (stripped.includes("\x1b[201~")) return true;
+                // Otherwise enter discard mode to consume the rest
+                isInPaste = true;
+                pasteBuffer = "";
+                return true;
+            }
+
+            // Paste start in edit mode — begin buffering
+            if (hasPasteStart) {
+                isInPaste = true;
+                pasteBuffer = "";
+                key = key.replace("\x1b[200~", "");
+            }
+
+            pasteBuffer += key;
+            const endIndex = pasteBuffer.indexOf("\x1b[201~");
+            if (endIndex === -1) return true; // still buffering
+
+            // Paste complete
+            const pasteContent = pasteBuffer.substring(0, endIndex);
+            isInPaste = false;
+            const remaining = pasteBuffer.substring(endIndex + 6);
+            pasteBuffer = "";
+
+            if (component.editing) {
+                const cleanText = pasteContent.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+                const isLarge = cleanText.includes("\n") || cleanText.length > 150;
+                if (isLarge) {
+                    const lineCount = cleanText.split("\n").length;
+                    const display = lineCount > 1
+                        ? `[Pasted ${lineCount} lines]`
+                        : `[Pasted ${cleanText.length} chars]`;
+                    component.editSegments.push({ type: "paste", content: cleanText, display });
+                    component.cursorPos = component.getContentLength();
+                } else {
+                    component.insertAtCursor(cleanText);
+                }
+                component.invalidate();
+            }
+
+            if (remaining) handleInput(remaining);
+            return true;
+        }
+
+        function handleInput(key: string): void {
+            if (handlePasteInput(key)) return;
+            if (handleEditInput(key)) return;
+            handleSelectInput(key);
         }
 
         // Return wrapper component that delegates to the component instance
