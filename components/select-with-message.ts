@@ -470,28 +470,69 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
         this.cursorPos += text.length;
     }
 
-    /** Delete character/segment before cursor. */
+    /**
+     * Remove a paste segment and merge adjacent text segments if both are text.
+     */
+    private removeSegmentAndMerge(segIdx: number): void {
+        const before = segIdx > 0 ? this.editSegments[segIdx - 1] : undefined;
+        const after = this.editSegments[segIdx + 1];
+        if (before?.type === "text" && after?.type === "text") {
+            before.content += after.content;
+            this.editSegments.splice(segIdx, 2);
+        } else {
+            this.editSegments.splice(segIdx, 1);
+        }
+    }
+
+    /** Delete character/segment before cursor (backspace). */
     deleteBeforeCursor(): void {
         if (this.cursorPos <= 0) return;
 
-        const { segIdx, offset } = this.getSegmentAtPos(this.cursorPos - 1);
-        const seg = this.editSegments[segIdx];
+        let { segIdx, offset } = this.getSegmentAtPos(this.cursorPos - 1);
+        let seg = this.editSegments[segIdx];
         if (!seg) return;
 
+        // At start of a text segment — backspace should target the previous segment
+        if (seg.type === "text" && offset === 0 && segIdx > 0) {
+            segIdx--;
+            seg = this.editSegments[segIdx]!;
+            offset = seg.type === "paste" ? seg.content.length : seg.content.length - 1;
+        }
+
         if (seg.type === "paste") {
-            // Remove entire paste segment and merge adjacent text segments
             this.cursorPos -= seg.content.length;
-            const before = segIdx > 0 ? this.editSegments[segIdx - 1] : undefined;
-            const after = this.editSegments[segIdx + 1];
-            if (before?.type === "text" && after?.type === "text") {
-                before.content += after.content;
-                this.editSegments.splice(segIdx, 2); // remove paste + after, before already merged
-            } else {
-                this.editSegments.splice(segIdx, 1);
-            }
+            this.removeSegmentAndMerge(segIdx);
         } else {
             seg.content = seg.content.slice(0, offset) + seg.content.slice(offset + 1);
             this.cursorPos--;
+            if (seg.content.length === 0) {
+                this.editSegments.splice(segIdx, 1);
+            }
+        }
+    }
+
+    /** Delete character/segment at cursor (forward delete). */
+    deleteAfterCursor(): void {
+        if (this.cursorPos >= this.getContentLength()) return;
+
+        let { segIdx, offset } = this.getSegmentAtPos(this.cursorPos);
+        let seg = this.editSegments[segIdx];
+        if (!seg) return;
+
+        // At end of a text segment — forward delete should target the next segment
+        if (seg.type === "text" && offset === seg.content.length) {
+            const next = this.editSegments[segIdx + 1];
+            if (next) {
+                segIdx++;
+                seg = next;
+                offset = 0;
+            }
+        }
+
+        if (seg.type === "paste") {
+            this.removeSegmentAndMerge(segIdx);
+        } else {
+            seg.content = seg.content.slice(0, offset) + seg.content.slice(offset + 1);
             if (seg.content.length === 0) {
                 this.editSegments.splice(segIdx, 1);
             }
@@ -925,6 +966,12 @@ export async function selectWithMessage<T>(
 
             if (matchesKey(key, "backspace")) {
                 component.deleteBeforeCursor();
+                component.invalidate();
+                return true;
+            }
+
+            if (matchesKey(key, "delete")) {
+                component.deleteAfterCursor();
                 component.invalidate();
                 return true;
             }

@@ -93,7 +93,17 @@ Uses `editAllVisLines` and `editCursorVisLineIdx` (absolute, not windowed):
 - Removed dead `handleInput` method from class (Component interface has it optional)
 - Split wrapper `handleInput` into `handlePasteInput` / `handleEditInput` / `handleSelectInput`
 - Paste handler only buffers in edit mode; outside edit mode, markers are consumed and discarded
+- Added `insertSegmentAtCursor()` for inserting paste segments at cursor (splits text segment)
+- `insertAtCursor()` kept as inline-merge for plain text (no fragmentation)
+- Large pastes now insert at cursor position via `insertSegmentAtCursor` instead of appending
+- Added forward delete (Delete key) with `deleteAfterCursor()`
+- Extracted `removeSegmentAndMerge()` helper for paste segment removal + adjacent text merge
+- Both `deleteBeforeCursor` and `deleteAfterCursor` handle segment boundary peeking
 - Removed commented-out debug `ctx.ui.notify` in `tools/bash.ts`
+
+## Delete Operations
+- `deleteBeforeCursor()` — backspace. At text segment boundary (offset 0), peeks at previous segment. Removes paste atomically. Merges adjacent text segments via `removeSegmentAndMerge()`.
+- `deleteAfterCursor()` — forward delete (Delete key). At text segment boundary (offset === length), peeks at next segment. Same paste + merge logic.
 
 ## Files Changed
 - `components/select-with-message.ts` — cursor navigation + cleanup
