@@ -96,6 +96,11 @@ interface LogicalLineInfo {
     visualCount: number;
 }
 
+// Edit buffer segment: typed text or a large paste shown as placeholder
+type EditSegment =
+    | { type: "text"; content: string }
+    | { type: "paste"; content: string; display: string };
+
 // Maps a visual row to its logical line and part
 interface FlatEntry {
     logicalIdx: number;
@@ -209,7 +214,12 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
     // Mutable state
     cursor: number;
     editing = false;
-    editBuffer = "";
+    // Segment-based edit buffer: typed text and large pastes tracked separately
+    editSegments: EditSegment[] = [];
+    // Flat string for the full edit buffer (for display and confirm)
+    get editBuffer(): string {
+        return this.editSegments.map(s => s.content).join("");
+    }
     // Scroll offset — visual-row index (0-based) into flatIndex
     scrollOffset = 0;
     // Computed during render, used by PgUp/PgDn
@@ -436,8 +446,12 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
                     const contIndent = " ".repeat(contPadWidth);
                     const contLineWidth = Math.max(1, contentWidth - contPadWidth);
 
-                    // Split by newlines (multi-line paste support)
-                    const bufferLines = buffer.split("\n");
+                    // Build display buffer: replace large paste segments with placeholders
+                    const displayBuffer = this.editSegments.map(s => {
+                        if (s.type === "paste" && s.display) return s.display;
+                        return s.content;
+                    }).join("");
+                    const bufferLines = displayBuffer.split("\n");
                     let isFirstVisualLine = true;
 
                     for (let bi = 0; bi < bufferLines.length; bi++) {
@@ -556,7 +570,17 @@ export async function selectWithMessage<T>(
                     if (component.editing) {
                         // Normalize line endings, preserve newlines for multi-line paste
                         const cleanText = pasteContent.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-                        component.editBuffer += cleanText;
+                        // Large paste threshold: multi-line or > 150 chars
+                        const isLarge = cleanText.includes("\n") || cleanText.length > 150;
+                        if (isLarge) {
+                            const lineCount = cleanText.split("\n").length;
+                            const display = lineCount > 1
+                                ? `[Pasted ${lineCount} lines]`
+                                : `[Pasted ${cleanText.length} chars]`;
+                            component.editSegments.push({ type: "paste", content: cleanText, display });
+                        } else {
+                            component.editSegments.push({ type: "text", content: cleanText });
+                        }
                         component.invalidate();
                     }
                     isInPaste = false;
@@ -572,7 +596,7 @@ export async function selectWithMessage<T>(
             if (component.editing) {
                 if (matchesKey(key, "escape")) {
                     component.editing = false;
-                    component.editBuffer = "";
+                    component.editSegments = [];
                     component.invalidate();
                     return;
                 }
@@ -583,13 +607,30 @@ export async function selectWithMessage<T>(
                 }
 
                 if (matchesKey(key, "backspace")) {
-                    component.editBuffer = component.editBuffer.slice(0, -1);
+                    if (component.editSegments.length > 0) {
+                        const last = component.editSegments[component.editSegments.length - 1]!;
+                        if (last.type === "paste") {
+                            // Remove entire paste segment
+                            component.editSegments.pop();
+                        } else if (last.content.length > 0) {
+                            last.content = last.content.slice(0, -1);
+                            if (last.content.length === 0) {
+                                component.editSegments.pop();
+                            }
+                        }
+                    }
                     component.invalidate();
                     return;
                 }
 
                 if (key.length === 1 && key.charCodeAt(0) >= 32) {
-                    component.editBuffer += key;
+                    // Append to last text segment, or create a new one
+                    const last = component.editSegments[component.editSegments.length - 1];
+                    if (last && last.type === "text") {
+                        last.content += key;
+                    } else {
+                        component.editSegments.push({ type: "text", content: key });
+                    }
                     component.invalidate();
                 }
                 return;
@@ -638,7 +679,7 @@ export async function selectWithMessage<T>(
 
             if (matchesKey(key, "tab")) {
                 component.editing = true;
-                component.editBuffer = "";
+                component.editSegments = [];
                 component.invalidate();
                 return;
             }
