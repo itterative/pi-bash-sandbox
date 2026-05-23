@@ -111,6 +111,22 @@ All input handling moved into `SelectWithMessageComponent`. No more public mutab
 - Dead `editVisLines` field removed
 - `done` callback uses definite assignment (`!`) instead of `| null`
 
+## Bug Fixes (Session 3)
+
+### Up/down navigation stuck / jumping to start of buffer
+**Root cause:** Two issues with display offset boundary handling:
+1. Text segments in `buildDisplayMapping` didn't map end-boundary positions (`dispToContent[displayEnd]`). When cursor landed there, the `?? 0` fallback sent it to buffer start.
+2. Adjacent visual lines share a boundary (`prev.dispEnd == next.dispStart`). The finder uses `< dispEnd` (exclusive), so `targetDispOff = prev.dispEnd` was assigned to the next line — making up navigation appear to do nothing.
+
+**Fix:** Added end-boundary entries for text segments. In `moveCursorUp`/`moveCursorDown`, step back by 1 when `targetDispOff` lands on `dispEnd` (but not for the last line, where `dispEnd` is valid end-of-buffer).
+
+### Truncated edit area: off-by-one cursor / text overflow
+**Root cause:** `truncOffset` was never set because the guard `if (firstVl.isFirst)` was a dead condition — when truncated (`startLine > 0`), the first visible line is never the original first visual line, so `isFirst` was always `false`. The `…` prefix added 1 visible char the line wasn't wrapped for.
+
+**Fix:** Removed the impossible `isFirst` check so `truncOffset` is always set when truncated.
+
+**Known minor quirk:** Positions 0 and 1 in the truncated first line both render the cursor after `…` (position 0 is the hidden char). Fixing this would require rendering `…` as a separate prefix element — deferred.
+
 ## Delete Operations
 - `deleteBeforeCursor()` — backspace. At text segment boundary (offset 0), peeks at previous segment. Removes paste atomically. Merges adjacent text segments via `removeSegmentAndMerge()`.
 - `deleteAfterCursor()` — forward delete (Delete key). At text segment boundary (offset === length), peeks at next segment. Same paste + merge logic.

@@ -354,7 +354,12 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
         this.desiredCol = curCol;
 
         const prev = this.editAllVisLines[curLine - 1]!;
-        const targetDispOff = Math.min(prev.dispStart + curCol, prev.dispEnd);
+        let targetDispOff = Math.min(prev.dispStart + curCol, prev.dispEnd);
+        // Avoid boundary: prev.dispEnd == next.dispStart, which the visual line
+        // finder (< dispEnd) assigns to the next line. Step inside prev.
+        if (targetDispOff === prev.dispEnd && prev.dispEnd > prev.dispStart) {
+            targetDispOff--;
+        }
         this.cursorPos = this.editDispToContent[targetDispOff] ?? 0;
     }
 
@@ -373,8 +378,17 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
         const curCol = this.desiredCol ?? (this.editCursorDispOff - curVl.dispStart);
         this.desiredCol = curCol;
 
-        const next = this.editAllVisLines[curLine + 1]!;
-        const targetDispOff = Math.min(next.dispStart + curCol, next.dispEnd);
+        const nextIdx = curLine + 1;
+        const next = this.editAllVisLines[nextIdx]!;
+        let targetDispOff = Math.min(next.dispStart + curCol, next.dispEnd);
+        // Avoid boundary: if next is not the last visual line, next.dispEnd ==
+        // nextnext.dispStart, which the visual line finder (< dispEnd) assigns to
+        // the line after next. Step inside next. On the last line, dispEnd is a
+        // valid end-of-buffer position (finder uses fallback) — don't step back.
+        if (nextIdx < this.editAllVisLines.length - 1
+            && targetDispOff === next.dispEnd && next.dispEnd > next.dispStart) {
+            targetDispOff--;
+        }
         this.cursorPos = this.editDispToContent[targetDispOff] ?? this.getContentLength();
     }
 
@@ -677,7 +691,11 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
                     dispToContent[display.length + i] = cPos + i;
                 }
                 display += seg.content;
+                // End-boundary: map the position just past the text
+                const dEnd = display.length;
                 cPos += seg.content.length;
+                contentToDisp[cPos] = dEnd;
+                dispToContent[dEnd] = cPos;
             }
         }
 
@@ -796,15 +814,12 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
         const endLine = Math.min(allVisLines.length, startLine + MAX_EDIT_LINES);
         const visibleVisLines = allVisLines.slice(startLine, endLine);
 
-        // Compute truncation offset for the first visible line when truncated.
-        // The "…" replaces ELLIPSIS_VISUAL_WIDTH display chars worth of original
-        // text at the start of the first line.
+        // When truncated at top, the first visible line shows "…" in the prefix,
+        // which adds ELLIPSIS_VISUAL_WIDTH extra chars. Remove that many chars
+        // from the start of the displayed text so the line doesn't overflow.
         const isTruncatedTop = startLine > 0;
         if (isTruncatedTop && visibleVisLines.length > 0) {
-            const firstVl = visibleVisLines[0]!;
-            if (firstVl.isFirst) {
-                firstVl.truncOffset = ELLIPSIS_VISUAL_WIDTH;
-            }
+            visibleVisLines[0]!.truncOffset = ELLIPSIS_VISUAL_WIDTH;
         }
 
         // Store navigation state
@@ -847,7 +862,7 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
             }
 
             if (isCursorLine) {
-                const cursorColInText = this.editCursorDispOff - vl.dispStart - vl.truncOffset;
+                const cursorColInText = Math.max(0, this.editCursorDispOff - vl.dispStart - vl.truncOffset);
                 const insertAt = prefixText.length + Math.min(cursorColInText, displayText.length);
 
                 if (isAtEnd) {
