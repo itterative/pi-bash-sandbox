@@ -125,7 +125,7 @@ All input handling moved into `SelectWithMessageComponent`. No more public mutab
 
 **Fix:** Removed the impossible `isFirst` check so `truncOffset` is always set when truncated.
 
-**Known minor quirk:** Positions 0 and 1 in the truncated first line both render the cursor after `…` (position 0 is the hidden char). Fixing this would require rendering `…` as a separate prefix element — deferred.
+**Follow-up:** Replaced `truncOffset` slicing with window offset (`cursorVisLineIdx - 1`). The cursor is never placed on the truncated first/last visible lines — it stays in the safe middle. This eliminates all cursor-on-truncated-line edge cases.
 
 ## Delete Operations
 - `deleteBeforeCursor()` — backspace. At text segment boundary (offset 0), peeks at previous segment. Removes paste atomically. Merges adjacent text segments via `removeSegmentAndMerge()`.

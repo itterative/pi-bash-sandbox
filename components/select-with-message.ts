@@ -66,7 +66,9 @@ const HORIZONTAL_PADDING = 4;
 const CONTENT_BOX_PAD_X = 1;
 const CONTENT_BOX_PAD_Y = 0;
 
-// Max visual lines in the inline edit area before truncating
+// Max visual lines in the inline edit area before truncating.
+// MUST be >= 3 so the cursor always has a safe middle line between
+// the truncated first/last lines (cursor is never placed on those).
 const MAX_EDIT_LINES = 3;
 
 // Character count above which an inline paste becomes a placeholder segment
@@ -801,13 +803,16 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
             contLineWidth,
         );
 
-        // Apply line limit: show window that includes cursor's visual line
+        // Apply line limit: show window that includes cursor's visual line.
+        // Offset by 1 so the cursor is never on the first visible line when
+        // top-truncated (or the last when bottom-truncated). With MAX_EDIT_LINES
+        // >= 3 the cursor is always in the safe middle.
         let startLine: number;
         if (allVisLines.length <= MAX_EDIT_LINES) {
             startLine = 0;
         } else {
             startLine = Math.max(0, Math.min(
-                cursorVisLineIdx,
+                cursorVisLineIdx - 1,
                 allVisLines.length - MAX_EDIT_LINES,
             ));
         }
