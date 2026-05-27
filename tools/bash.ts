@@ -68,18 +68,23 @@ When requesting to run bash commands, the user may attach a note explaining thei
 Pay attention to these notes as they provide context about the user's preferences and concerns.
 `;
 
-        if (event.systemPromptOptions) {
-            return {
-                message: {
-                    customType: "pi-bash-sandbox",
-                    content: notes,
-                    display: false,
-                },
-            };
+        const notesBlock = `<bash_sandbox>\n${notes}\n</bash_sandbox>`;
+        let systemPrompt = event.systemPrompt;
+        const projectContextEnd = "</project_context>";
+        const idx = systemPrompt.indexOf(projectContextEnd);
+        if (idx !== -1) {
+            systemPrompt =
+                systemPrompt.slice(0, idx + projectContextEnd.length) +
+                "\n\n" +
+                notesBlock +
+                "\n" +
+                systemPrompt.slice(idx + projectContextEnd.length);
+        } else {
+            systemPrompt = systemPrompt + "\n\n" + notesBlock;
         }
 
         return {
-            systemPrompt: event.systemPrompt + "\n\n" + notes,
+            systemPrompt,
         };
     });
 
