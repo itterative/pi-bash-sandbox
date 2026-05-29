@@ -53,6 +53,11 @@
               }
             }
           ]
+        },
+        "gitWorktreeSupport": {
+          "type": "boolean",
+          "description": "Auto-detect and mount git worktree dependencies when the working directory is a worktree (default: true)",
+          "default": true
         }
       }
     },

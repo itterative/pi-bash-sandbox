@@ -290,6 +290,156 @@ describe("bubblewrap", () => {
         });
     });
 
+    describe("git worktree support", () => {
+        it("should auto-mount worktree git dir and main repo .git when cwd is a worktree", () => {
+            // Simulate a git worktree structure
+            const mainRepo = path.join(tempDir, "main-repo");
+            const worktree = path.join(tempDir, "worktree");
+            const worktreeGitDir = path.join(mainRepo, ".git", "worktrees", "feature");
+
+            fs.mkdirSync(worktreeGitDir, { recursive: true });
+            fs.mkdirSync(worktree, { recursive: true });
+            fs.mkdirSync(path.join(mainRepo, ".git"), { recursive: true });
+
+            // Create .git file in worktree pointing to worktree git dir
+            fs.writeFileSync(path.join(worktree, ".git"), `gitdir: ${worktreeGitDir}`);
+
+            // Create commondir pointing to main repo .git
+            fs.writeFileSync(path.join(worktreeGitDir, "commondir"), mainRepo + "/.git");
+
+            const testConfig = writeProjectConfig({
+                sandbox: { mounts: {} },
+                permissions: {},
+            });
+
+            const options: SandboxOptions = {
+                env: { HOME: "/home/testuser", PATH: "/usr/bin", USER: "testuser" },
+                cwd: worktree,
+                config: testConfig,
+            };
+
+            const result = sandbox("bwrap", "git status", options);
+
+            // Should mount the main repo .git dir
+            expect(result).toContain(`--bind-try '${mainRepo}/.git' '${mainRepo}/.git'`);
+            // Should mount the worktree git dir (read-write, mounted after to override)
+            expect(result).toContain(`--bind-try '${worktreeGitDir}' '${worktreeGitDir}'`);
+        });
+
+        it("should handle relative commondir path", () => {
+            const mainRepo = path.join(tempDir, "main-repo");
+            const worktree = path.join(tempDir, "worktree");
+            const worktreeGitDir = path.join(mainRepo, ".git", "worktrees", "feature");
+
+            fs.mkdirSync(worktreeGitDir, { recursive: true });
+            fs.mkdirSync(worktree, { recursive: true });
+            fs.mkdirSync(path.join(mainRepo, ".git"), { recursive: true });
+
+            fs.writeFileSync(path.join(worktree, ".git"), `gitdir: ${worktreeGitDir}`);
+
+            // Relative commondir (relative to worktreeGitDir)
+            fs.writeFileSync(path.join(worktreeGitDir, "commondir"), "../../");
+
+            const testConfig = writeProjectConfig({
+                sandbox: { mounts: {} },
+                permissions: {},
+            });
+
+            const options: SandboxOptions = {
+                env: { HOME: "/home/testuser", PATH: "/usr/bin", USER: "testuser" },
+                cwd: worktree,
+                config: testConfig,
+            };
+
+            const result = sandbox("bwrap", "git status", options);
+
+            // Should resolve relative commondir and mount main repo .git
+            const expectedMainGit = path.resolve(worktreeGitDir, "../../");
+            expect(result).toContain(`--bind-try '${expectedMainGit}' '${expectedMainGit}'`);
+        });
+
+        it("should NOT mount worktree dirs when cwd has a regular .git directory", () => {
+            const testConfig = writeProjectConfig({
+                sandbox: { mounts: {} },
+                permissions: {},
+            });
+
+            // projectDir already has .pi/ but no .git file (it's a normal dir)
+            const options: SandboxOptions = {
+                env: { HOME: "/home/testuser", PATH: "/usr/bin", USER: "testuser" },
+                cwd: projectDir,
+                config: testConfig,
+            };
+
+            const result = sandbox("bwrap", "git status", options);
+
+            // Should NOT contain any bind-try for worktree paths
+            expect(result).not.toMatch(/--bind-try '.*worktrees/);
+        });
+
+        it("should NOT mount worktree dirs when gitWorktreeSupport is false", () => {
+            const mainRepo = path.join(tempDir, "main-repo");
+            const worktree = path.join(tempDir, "worktree");
+            const worktreeGitDir = path.join(mainRepo, ".git", "worktrees", "feature");
+
+            fs.mkdirSync(worktreeGitDir, { recursive: true });
+            fs.mkdirSync(worktree, { recursive: true });
+            fs.mkdirSync(path.join(mainRepo, ".git"), { recursive: true });
+
+            fs.writeFileSync(path.join(worktree, ".git"), `gitdir: ${worktreeGitDir}`);
+            fs.writeFileSync(path.join(worktreeGitDir, "commondir"), mainRepo + "/.git");
+
+            const testConfig = writeProjectConfig({
+                sandbox: {
+                    mounts: {},
+                    gitWorktreeSupport: false,
+                },
+                permissions: {},
+            });
+
+            const options: SandboxOptions = {
+                env: { HOME: "/home/testuser", PATH: "/usr/bin", USER: "testuser" },
+                cwd: worktree,
+                config: testConfig,
+            };
+
+            const result = sandbox("bwrap", "git status", options);
+
+            expect(result).not.toContain(`--bind-try '${worktreeGitDir}'`);
+            expect(result).not.toContain(`--bind-try '${mainRepo}/.git'`);
+        });
+
+        it("should handle worktree with missing commondir gracefully", () => {
+            const mainRepo = path.join(tempDir, "main-repo");
+            const worktree = path.join(tempDir, "worktree");
+            const worktreeGitDir = path.join(mainRepo, ".git", "worktrees", "feature");
+
+            fs.mkdirSync(worktreeGitDir, { recursive: true });
+            fs.mkdirSync(worktree, { recursive: true });
+
+            fs.writeFileSync(path.join(worktree, ".git"), `gitdir: ${worktreeGitDir}`);
+            // No commondir file
+
+            const testConfig = writeProjectConfig({
+                sandbox: { mounts: {} },
+                permissions: {},
+            });
+
+            const options: SandboxOptions = {
+                env: { HOME: "/home/testuser", PATH: "/usr/bin", USER: "testuser" },
+                cwd: worktree,
+                config: testConfig,
+            };
+
+            const result = sandbox("bwrap", "git status", options);
+
+            // Should still mount the worktree git dir
+            expect(result).toContain(`--bind-try '${worktreeGitDir}' '${worktreeGitDir}'`);
+            // But should not crash
+            expect(result).toContain("--die-with-parent");
+        });
+    });
+
     describe("shell behavior", () => {
         it("should use SHELL env var when available", () => {
             const testConfig = writeProjectConfig({

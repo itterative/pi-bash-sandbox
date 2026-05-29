@@ -31,6 +31,7 @@ export interface SandboxConfig {
         env?: Record<string, string>;  // custom env vars
         inheritEnv?: SandboxConfigEnvFilter;  // filter for existing env vars
         homeMounts?: SandboxConfigHomeMounts;  // home directory mounts: true (default), false (none), or array of paths
+        gitWorktreeSupport?: boolean;  // auto-mount git worktree dependencies (default: true)
     };
     permissions: SandboxConfigPermissions;
     audit?: SandboxConfigAudit;
@@ -54,6 +55,7 @@ function tryLoad(path: string): SandboxConfig | null {
                 env: data.sandbox?.env,
                 inheritEnv: data.sandbox?.inheritEnv,
                 homeMounts: data.sandbox?.homeMounts,
+                gitWorktreeSupport: data.sandbox?.gitWorktreeSupport,
             },
             permissions: data.permissions ?? {},
             audit: data.audit ? {
@@ -159,6 +161,7 @@ function mergeConfigs(global: SandboxConfig | null, project: SandboxConfig | nul
             env: mergeRecords(base.sandbox.env, project.sandbox.env),
             inheritEnv: mergeRecords(base.sandbox.inheritEnv, project.sandbox.inheritEnv),
             homeMounts: mergeHomeMounts(base.sandbox.homeMounts, project.sandbox.homeMounts),
+            gitWorktreeSupport: project.sandbox.gitWorktreeSupport ?? base.sandbox.gitWorktreeSupport,
         },
         permissions: mergeRecordsOrDefault(base.permissions, project.permissions, {}),
         audit: project.audit ?? base.audit,

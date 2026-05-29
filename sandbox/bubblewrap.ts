@@ -1,4 +1,6 @@
+import fs from "node:fs";
 import os from "node:os";
+import path from "node:path";
 import config, { type SandboxConfig, DEFAULT_HOME_MOUNTS, type SandboxConfigHomeMounts } from "../common/config";
 
 export interface SandboxOptions {
@@ -151,6 +153,52 @@ function buildMountCmd(sandboxConfig: SandboxConfig, options?: SandboxOptions): 
     return cmd;
 }
 
+function buildGitWorktreeMountCmd(sandboxConfig: SandboxConfig, cwd: string): string[] {
+    const cmd: string[] = [];
+
+    if (sandboxConfig.sandbox?.gitWorktreeSupport === false) {
+        return cmd;
+    }
+
+    const gitPath = path.join(cwd, ".git");
+    if (!fs.existsSync(gitPath) || !fs.statSync(gitPath).isFile()) {
+        return cmd;
+    }
+
+    let gitContent: string;
+    try {
+        gitContent = fs.readFileSync(gitPath, "utf-8").trim();
+    } catch {
+        return cmd;
+    }
+
+    const gitdirMatch = gitContent.match(/^gitdir:\s*(.+)$/);
+    if (!gitdirMatch) {
+        return cmd;
+    }
+
+    const worktreeGitDir = gitdirMatch[1].trim();
+
+    // Read commondir to find the main repo's .git directory
+    const commondirPath = path.join(worktreeGitDir, "commondir");
+    if (fs.existsSync(commondirPath)) {
+        try {
+            const commondir = fs.readFileSync(commondirPath, "utf-8").trim();
+            const mainGitDir = path.isAbsolute(commondir)
+                ? commondir
+                : path.resolve(path.dirname(commondirPath), commondir);
+            cmd.push("--bind-try", escapeArg(mainGitDir), escapeArg(mainGitDir));
+        } catch {
+            // If commondir can't be read, continue without main repo mount
+        }
+    }
+
+    // Mount the worktree-specific git dir (e.g. main-repo/.git/worktrees/feature/)
+    cmd.push("--bind-try", escapeArg(worktreeGitDir), escapeArg(worktreeGitDir));
+
+    return cmd;
+}
+
 export default function sandbox(bwrap: string, command: string, options?: SandboxOptions): string {
     const cmd: string[] = [bwrap];
     const env = options?.env ?? process.env;
@@ -173,6 +221,10 @@ export default function sandbox(bwrap: string, command: string, options?: Sandbo
             cmd.push("--bind-try", escapeArgWithSubstitution(source, homeDir), escapeArgWithSubstitution(dest, homeDir));
         }
     }
+
+    // Auto-detect and mount git worktree dependencies
+    const gitWorktreeCmd = buildGitWorktreeMountCmd(sandboxConfig, cwd);
+    cmd.push(...gitWorktreeCmd);
 
     // Add system and home mounts
     const mountCmd = buildMountCmd(sandboxConfig, options);

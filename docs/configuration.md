@@ -80,6 +80,8 @@ Every sandbox includes these automatic mounts:
 | `/etc/bash_completion`, `/usr/share/bash-completion`                | read-only (try) | Bash completion         |
 | `~/.bashrc`, `~/.bash_profile` (configurable)                       | read-only (try) | User shell configs      |
 | `~/.local`, `~/.config` (configurable)                              | read-only (try) | User config directories |
+| Main repo `.git/` (worktrees only)                                  | read-write      | Shared git object store |
+| Worktree git dir `.git/worktrees/<name>/` (worktrees only)          | read-write      | Worktree-specific state |
 
 ### `sandbox.homeMounts` (optional)
 
@@ -128,6 +130,32 @@ Controls which files from the home directory are mounted into the sandbox:
 - `provider` - The AI provider to use (e.g., "openai", "anthropic")
 - `model` - The model ID to use (e.g., "gpt-4o", "claude-3-5-sonnet")
 - If not specified, the current session model is used
+
+### `sandbox.gitWorktreeSupport` (optional)
+
+Controls automatic detection and mounting of git worktree dependencies:
+
+- `true` (default) - When the working directory is a git worktree, automatically mount the worktree-specific git directory and the main repository's `.git` directory
+- `false` - Disable automatic worktree mounting
+
+When enabled and the working directory is a git worktree (`.git` is a file containing a `gitdir:` pointer), the sandbox automatically adds:
+
+| Mount | Mode | Purpose |
+| ----- | ---- | ------- |
+| Main repo `.git/` | read-write | Shared object store, refs — needed for commits, fetch, etc. |
+| Worktree git dir (`.git/worktrees/<name>/`) | read-write | HEAD, index, and other worktree-specific state |
+
+**Note:** Worktree detection requires that pi is started from the worktree root directory (where the `.git` file exists). Starting from a subdirectory will not detect the worktree.
+
+**Example:**
+
+```json
+{
+    "sandbox": {
+        "gitWorktreeSupport": false
+    }
+}
+```
 
 ### `permissions` (required)
 
