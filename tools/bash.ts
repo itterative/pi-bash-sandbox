@@ -70,6 +70,12 @@ Pay attention to these notes as they provide context about the user's preference
 
         const notesBlock = `<bash_sandbox>\n${notes}\n</bash_sandbox>`;
         let systemPrompt = event.systemPrompt;
+
+        // Don't add if our block is already in the system prompt
+        if (systemPrompt.includes("<bash_sandbox>")) {
+            return { systemPrompt };
+        }
+
         const projectContextEnd = "</project_context>";
         const idx = systemPrompt.indexOf(projectContextEnd);
         if (idx !== -1) {
