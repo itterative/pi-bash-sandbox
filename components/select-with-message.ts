@@ -42,9 +42,9 @@
  *   ellipsis prefix ("… │ ") to indicate it belongs to the line above
  */
 
-import type { ExtensionContext, Theme } from "@mariozechner/pi-coding-agent";
-import { DynamicBorder } from "@mariozechner/pi-coding-agent";
-import type { Component, Focusable } from "@mariozechner/pi-tui";
+import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder } from "@earendil-works/pi-coding-agent";
+import type { Component, Focusable } from "@earendil-works/pi-tui";
 import {
     CURSOR_MARKER,
     Box,
@@ -54,7 +54,7 @@ import {
     Text,
     visibleWidth,
     wrapTextWithAnsi,
-} from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-tui";
 import { wrapPreservingSpaces } from "../common/text";
 
 // ─── Layout & behavior constants ─────────────────────────────────────

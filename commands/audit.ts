@@ -10,20 +10,20 @@
  * 3. Select which patterns to add, skipping existing ones
  */
 
-import { complete } from "@mariozechner/pi-ai";
+import { complete } from "@earendil-works/pi-ai";
 import type {
     ExtensionAPI,
     ExtensionCommandContext,
     Theme,
-} from "@mariozechner/pi-coding-agent";
-import { BorderedLoader } from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
+import { BorderedLoader } from "@earendil-works/pi-coding-agent";
 
 import {
     AutocompleteItem,
     Container,
     Spacer,
     Text,
-} from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-tui";
 import { multiSelect, type MultiSelectItem, type MultiSelectRenderOptions } from "../components/multi-select";
 import { select, type PagerItem, type SelectRenderItemOptions } from "../components/select";
 import fs from "node:fs";

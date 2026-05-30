@@ -1,5 +1,5 @@
-import { Api, Model } from "@mariozechner/pi-ai";
-import { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { Api, Model } from "@earendil-works/pi-ai";
+import { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 /**
  * Get API key and headers for a model, handling both old and new API.

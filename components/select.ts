@@ -4,16 +4,16 @@
  * A single-select UI component with cursor navigation and scrolling.
  */
 
-import type { ExtensionCommandContext, Theme } from "@mariozechner/pi-coding-agent";
-import { DynamicBorder } from "@mariozechner/pi-coding-agent";
-import type { Component } from "@mariozechner/pi-tui";
+import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder } from "@earendil-works/pi-coding-agent";
+import type { Component } from "@earendil-works/pi-tui";
 import {
     Box,
     Container,
     matchesKey,
     Spacer,
     Text,
-} from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-tui";
 import { indentLines } from "../common/text";
 import type { PagerItem } from "./pager";
 
@@ -87,7 +87,7 @@ function calculateScrollOffset(
 
 /**
  * SelectComponent - A single-select component with cursor navigation.
- * 
+ *
  * Renders a list of items with a cursor that can be navigated with arrow keys.
  * Supports multi-line items with proper scrolling.
  */
@@ -102,12 +102,12 @@ export class SelectComponent<T> implements Component {
     private done: ((value: T | undefined) => void) | null = null;
     private scrollOffset = 0;
     private confirmed = false;
-    
+
     // Cache built during render: lines per item and start line for each item
     private cachedItemLines: string[][] = [];
     private cachedItemStartLines: number[] = [];
     private cachedTotalLines = 0;
-    
+
     readonly state: SelectState<T>;
 
     constructor(
@@ -115,7 +115,7 @@ export class SelectComponent<T> implements Component {
     ) {
         this.renderItem = options.renderItem ?? defaultRenderItem;
         this.helpText = options.helpText ?? "↑/↓ navigate | Enter confirm | Esc cancel";
-        
+
         this.state = {
             items: options.items,
             cursor: options.initialCursor ?? 0,
@@ -285,7 +285,7 @@ export class SelectComponent<T> implements Component {
                 continuationPrefix: "  ",
             });
             const lines = indented.split("\n");
-            
+
             this.cachedItemStartLines.push(totalLines);
             this.cachedItemLines.push(lines);
             totalLines += lines.length;
@@ -302,7 +302,7 @@ export class SelectComponent<T> implements Component {
 
     private updateContent(): void {
         if (!this.theme) return;
-        
+
         this.contentContainer.clear();
 
         // Flatten cached lines
@@ -364,7 +364,7 @@ export async function select<T>(
         const component = new SelectComponent(options);
         component.setDoneCallback(done);
         component.initialize(theme);
-        
+
         return component;
     });
 }

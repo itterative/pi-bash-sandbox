@@ -11,8 +11,9 @@
     "lookpath": "^1.2.3"
   },
   "devDependencies": {
-    "@mariozechner/pi-ai": "^0.75.5",
-    "@mariozechner/pi-coding-agent": "^0.75.5",
+    "@earendil-works/pi-ai": "^0.75.5",
+    "@earendil-works/pi-coding-agent": "^0.75.5",
+    "@earendil-works/pi-tui": "^0.75.5",
     "@types/node": "^25.3.3",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"

@@ -13,9 +13,9 @@ import {
     type ExtensionAPI,
     type ExtensionCommandContext,
     type ThemeColor,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
-import { AutocompleteItem, matchesKey } from "@mariozechner/pi-tui";
+import { AutocompleteItem, matchesKey } from "@earendil-works/pi-tui";
 
 import sandboxConfig from "../common/config";
 import { pager, type PagerItem, type PagerState } from "../components/pager";

@@ -1,10 +1,10 @@
 import { lookpath } from "lookpath";
 
-import { isToolCallEventType, isBashToolResult } from "@mariozechner/pi-coding-agent";
+import { isToolCallEventType, isBashToolResult } from "@earendil-works/pi-coding-agent";
 import type {
     ExtensionAPI,
     BashToolInput,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
 import sandboxConfig from "../common/config";
 import { ALLOWED_COMMAND_ENTRY_TYPE, type AllowedCommandEntry } from "../common/audit";
@@ -12,7 +12,7 @@ import sandbox from "../sandbox/bubblewrap";
 import getPermission, { Permission } from "../sandbox/permissions";
 import { selectWithMessage, type SelectMessageItem } from "../components/select-with-message";
 
-// FIXME: use the import instead of this (where is it exported from though? ide complains of @mariozechner/pi-coding-agent/core/extensions)
+// FIXME: use the import instead of this (where is it exported from though? ide complains of @earendil-works/pi-coding-agent/core/extensions)
 interface ToolCallEventResult {
     block?: boolean;
     reason?: string;

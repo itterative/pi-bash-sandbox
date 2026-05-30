@@ -2,7 +2,7 @@
  * Text utilities for formatting and truncating multi-line text.
  */
 
-import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 // Options for indenting lines
 export interface IndentLinesOptions {

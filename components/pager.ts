@@ -5,16 +5,16 @@
  * Does not manage cursor state or scrolling logic - that's handled by select.
  */
 
-import type { ExtensionCommandContext, Theme } from "@mariozechner/pi-coding-agent";
-import { DynamicBorder } from "@mariozechner/pi-coding-agent";
-import type { Component } from "@mariozechner/pi-tui";
+import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder } from "@earendil-works/pi-coding-agent";
+import type { Component } from "@earendil-works/pi-tui";
 import {
     Box,
     Container,
     matchesKey,
     Spacer,
     Text,
-} from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-tui";
 
 // An item in the pager
 export interface PagerItem<T> {
@@ -256,7 +256,7 @@ export async function pager<T>(
         const component = new PagerComponent(options);
         component.setDoneCallback(() => done());
         component.initialize(theme);
-        
+
         return component;
     });
 }

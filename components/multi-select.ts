@@ -4,16 +4,16 @@
  * A multi-select UI component with checkbox selection.
  */
 
-import type { ExtensionCommandContext, Theme } from "@mariozechner/pi-coding-agent";
-import { DynamicBorder } from "@mariozechner/pi-coding-agent";
-import type { Component } from "@mariozechner/pi-tui";
+import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
+import { DynamicBorder } from "@earendil-works/pi-coding-agent";
+import type { Component } from "@earendil-works/pi-tui";
 import {
     Box,
     Container,
     matchesKey,
     Spacer,
     Text,
-} from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-tui";
 import { indentLines } from "../common/text";
 
 // An item in the multi-select list
@@ -95,7 +95,7 @@ function calculateScrollOffset(
 
 /**
  * MultiSelectComponent - A multi-select component with checkboxes.
- * 
+ *
  * Renders a list of items with checkboxes that can be toggled.
  * Supports multi-line items with proper scrolling.
  */
@@ -110,12 +110,12 @@ export class MultiSelectComponent<T> implements Component {
     private done: ((value: T[]) => void) | null = null;
     private scrollOffset = 0;
     private confirmed = false;
-    
+
     // Cache built during render: lines per item and start line for each item
     private cachedItemLines: string[][] = [];
     private cachedItemStartLines: number[] = [];
     private cachedTotalLines = 0;
-    
+
     readonly state: MultiSelectState<T>;
 
     constructor(
@@ -123,7 +123,7 @@ export class MultiSelectComponent<T> implements Component {
     ) {
         this.renderItem = options.renderItem ?? defaultRenderItem;
         this.helpText = options.helpText ?? "↑/↓ navigate | Space toggle | a all | Enter confirm | Esc cancel";
-        
+
         this.state = {
             items: options.items,
             cursor: options.initialCursor ?? 0,
@@ -314,7 +314,7 @@ export class MultiSelectComponent<T> implements Component {
                 continuationPrefix: "     ", // Align with checkbox
             });
             const lines = indented.split("\n");
-            
+
             this.cachedItemStartLines.push(totalLines);
             this.cachedItemLines.push(lines);
             totalLines += lines.length;
@@ -331,7 +331,7 @@ export class MultiSelectComponent<T> implements Component {
 
     private updateContent(): void {
         if (!this.theme) return;
-        
+
         this.contentContainer.clear();
 
         // Flatten cached lines
@@ -405,7 +405,7 @@ export async function multiSelect<T>(
         const component = new MultiSelectComponent(options);
         component.setDoneCallback(done);
         component.initialize(theme);
-        
+
         return component;
     });
 }
