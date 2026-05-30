@@ -1076,10 +1076,19 @@ export async function selectWithMessage<T>(
         return undefined;
     }
 
-    return ctx.ui.custom<SelectWithMessageResult<T> | undefined>((_tui, theme, _kb, done) => {
-        const component = new SelectWithMessageComponent(options);
-        component.setDoneCallback(done);
-        component.initialize(theme);
-        return component;
-    });
+    // Hide the working indicator spinner to prevent flickering while the
+    // custom component is displayed (the spinner's animation frames cause
+    // constant re-renders that fight with the component on short terminals).
+    ctx.ui.setWorkingVisible(false);
+
+    try {
+        return await ctx.ui.custom<SelectWithMessageResult<T> | undefined>((_tui, theme, _kb, done) => {
+            const component = new SelectWithMessageComponent(options);
+            component.setDoneCallback(done);
+            component.initialize(theme);
+            return component;
+        });
+    } finally {
+        ctx.ui.setWorkingVisible(true);
+    }
 }
