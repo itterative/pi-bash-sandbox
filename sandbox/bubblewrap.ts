@@ -84,7 +84,7 @@ function buildMountCmd(sandboxConfig: SandboxConfig, options?: SandboxOptions): 
 
     cmd.push("--proc", "/proc");
     cmd.push("--dev", "/dev");
-    cmd.push("--size", "536870912", "--perms", "0750", "--tmpfs", "/tmp")
+    cmd.push("--bind", escapeArg("/tmp"), escapeArg("/tmp"))
 
     // Minimal system mounts (no /etc - too much sensitive data)
     const systemMounts = ["/usr", "/bin", "/lib", "/lib64"];
