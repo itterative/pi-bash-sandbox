@@ -76,6 +76,14 @@ Uses `editAllVisLines` and `editCursorVisLineIdx` (absolute, not windowed):
 - `deleteBeforeCursor()` — backspace. At text segment boundary (offset 0), peeks at previous segment. Removes paste atomically. Merges adjacent text segments via `removeSegmentAndMerge()`.
 - `deleteAfterCursor()` — forward delete. At text segment boundary (offset === length), peeks at next segment. Same paste + merge logic.
 
+## Word Movement & Deletion (matches pi-tui editor)
+Keybindings & semantics mirror pi-tui's editor word navigation (its internal `word-navigation.js` is NOT exported, so this is ported here):
+- **Move word** = `alt/ctrl+left|right` + `alt+b/f`; **delete word** = `ctrl+w`/`alt+backspace` (backward) + `alt+d`/`alt+delete` (forward).
+- Boundaries: `Intl.Segmenter` (granularity "word") refined with ASCII punctuation (`PUNCTUATION_REGEX`), so `foo.bar baz` stops at `foo | . | bar | baz` and skips whitespace. The same logic lives in pi-ask-user's `components/ask-user.ts` — keep the two in sync.
+- Paste segments stay **atomic**: `clampPosToPasteBoundary` snaps a computed word boundary to the edge of any paste segment it lands inside; `deleteRange` drops a whole paste marker on any overlap.
+- Range deletion goes through `deleteRange` + `mergeAdjacentTextSegments` (a shared primitive that handles cross-segment deletes and coalesces adjacent text segments).
+- `Intl.Segmenter` is ambient-declared in `types/intl-segmenter.d.ts` (ES2021 lib + @types/node don't expose it globally; Node 18+ runtime provides it).
+
 ## Constants
 - `MAX_EDIT_LINES = 3` — max visible edit lines before truncation
 - `LARGE_PASTE_THRESHOLD = 150` — char count for placeholder segment

@@ -77,6 +77,19 @@ const LARGE_PASTE_THRESHOLD = 150;
 // Visible width of the "…" truncation indicator
 const ELLIPSIS_VISUAL_WIDTH = 1;
 
+// ASCII punctuation treated as its own word-stop boundary, matching pi-tui's
+// editor word navigation (e.g. "foo.bar" stops at foo, ".", bar).
+const PUNCTUATION_REGEX = /[(){}[\]<>.,;:'"!?+\-=*/\\|&%^$#@~`]/;
+
+// Shared Unicode word segmenter, matching pi-tui's editor. Used for word
+// movement/deletion in the inline edit field.
+const wordSegmenter = new Intl.Segmenter(undefined, { granularity: "word" });
+
+// True when an Intl.Segmenter word segment is entirely whitespace.
+function isWhitespaceSegment(segment: string): boolean {
+    return segment.length === 0 || /^\s+$/.test(segment);
+}
+
 // ─── Public types ────────────────────────────────────────────────────
 
 // An item in the select list
@@ -390,6 +403,184 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
             targetDispOff--;
         }
         this.cursorPos = this.editDispToContent[targetDispOff] ?? this.getContentLength();
+    }
+
+    // ── Word navigation ─────────────────────────────────────────────
+    //
+    // Mirrors pi-tui's editor word movement so the inline edit field
+    // behaves like the main editor: Intl.Segmenter "word" granularity
+    // refined with ASCII punctuation boundaries. Paste segments are atomic —
+    // movement and deletion jump over a whole paste marker rather than
+    // stopping inside one.
+
+    private findWordBoundaryBackward(text: string, cursor: number): number {
+        if (cursor <= 0) return 0;
+        const segments = [...wordSegmenter.segment(text.slice(0, cursor))];
+        let newCursor = cursor;
+
+        // Skip trailing whitespace.
+        while (
+            segments.length > 0 &&
+            isWhitespaceSegment(segments[segments.length - 1]!.segment)
+        ) {
+            newCursor -= segments.pop()!.segment.length;
+        }
+        if (segments.length === 0) return newCursor;
+
+        const last = segments[segments.length - 1]!;
+        if (last.isWordLike) {
+            // Skip one word, stopping just after its trailing punctuation.
+            const segment = last.segment;
+            const matches = [...segment.matchAll(new RegExp(PUNCTUATION_REGEX.source, "g"))];
+            if (matches.length === 0) {
+                newCursor -= segment.length;
+            } else {
+                const lastMatch = matches[matches.length - 1]!;
+                newCursor -= segment.length - (lastMatch.index + lastMatch[0].length);
+            }
+        } else {
+            // Skip a run of punctuation (non-word, non-whitespace).
+            while (segments.length > 0) {
+                const s = segments[segments.length - 1]!;
+                if (s.isWordLike || isWhitespaceSegment(s.segment)) break;
+                newCursor -= segments.pop()!.segment.length;
+            }
+        }
+        return newCursor;
+    }
+
+    private findWordBoundaryForward(text: string, cursor: number): number {
+        if (cursor >= text.length) return text.length;
+        const iterator = wordSegmenter.segment(text.slice(cursor))[Symbol.iterator]();
+        let next = iterator.next();
+        let newCursor = cursor;
+
+        // Skip leading whitespace.
+        while (!next.done && isWhitespaceSegment(next.value.segment)) {
+            newCursor += next.value.segment.length;
+            next = iterator.next();
+        }
+        if (next.done) return newCursor;
+
+        if (next.value.isWordLike) {
+            // Skip up to the first punctuation inside the word.
+            const segment = next.value.segment;
+            const match = PUNCTUATION_REGEX.exec(segment);
+            newCursor += match ? match.index : segment.length;
+        } else {
+            // Skip a run of punctuation (non-word, non-whitespace).
+            while (!next.done) {
+                const v = next.value;
+                if (v.isWordLike || isWhitespaceSegment(v.segment)) break;
+                newCursor += v.segment.length;
+                next = iterator.next();
+            }
+        }
+        return newCursor;
+    }
+
+    private getSegmentFlatBounds(): { start: number; end: number; type: "text" | "paste" }[] {
+        const bounds: { start: number; end: number; type: "text" | "paste" }[] = [];
+        let pos = 0;
+        for (const seg of this.editSegments) {
+            const end = pos + seg.content.length;
+            bounds.push({ start: pos, end, type: seg.type });
+            pos = end;
+        }
+        return bounds;
+    }
+
+    /**
+     * Snap a flat position to the edge of any paste segment it lands inside.
+     * Paste markers are atomic, so word movement never stops within one.
+     */
+    private clampPosToPasteBoundary(
+        pos: number,
+        direction: "backward" | "forward",
+    ): number {
+        for (const b of this.getSegmentFlatBounds()) {
+            if (b.type === "paste" && pos > b.start && pos < b.end) {
+                return direction === "backward" ? b.start : b.end;
+            }
+        }
+        return pos;
+    }
+
+    private moveCursorWordLeft(): void {
+        const target = this.findWordBoundaryBackward(this.editBuffer, this.cursorPos);
+        this.cursorPos = this.clampPosToPasteBoundary(target, "backward");
+        this.desiredCol = null;
+    }
+
+    private moveCursorWordRight(): void {
+        const target = this.findWordBoundaryForward(this.editBuffer, this.cursorPos);
+        this.cursorPos = this.clampPosToPasteBoundary(target, "forward");
+        this.desiredCol = null;
+    }
+
+    /** Delete the flat content range [start, end), merging adjacent text segments. */
+    private deleteRange(start: number, end: number): void {
+        if (start >= end) return;
+        const newSegments: EditSegment[] = [];
+        let flatPos = 0;
+        for (const seg of this.editSegments) {
+            const segStart = flatPos;
+            const segEnd = flatPos + seg.content.length;
+            flatPos = segEnd;
+
+            // No overlap with the deletion range — keep as-is.
+            if (segEnd <= start || segStart >= end) {
+                newSegments.push(seg);
+                continue;
+            }
+
+            if (seg.type === "paste") {
+                // Paste segments are atomic: any overlap drops the whole marker.
+                continue;
+            }
+
+            const keepBefore = Math.max(0, start - segStart);
+            const keepAfter = Math.max(0, segEnd - end);
+            if (keepBefore > 0) {
+                newSegments.push({ type: "text", content: seg.content.slice(0, keepBefore) });
+            }
+            if (keepAfter > 0) {
+                newSegments.push({
+                    type: "text",
+                    content: seg.content.slice(seg.content.length - keepAfter),
+                });
+            }
+        }
+        this.editSegments = newSegments;
+        this.mergeAdjacentTextSegments();
+        this.cursorPos = start;
+        this.desiredCol = null;
+    }
+
+    private mergeAdjacentTextSegments(): void {
+        for (let i = 0; i < this.editSegments.length - 1; i++) {
+            const cur = this.editSegments[i];
+            const next = this.editSegments[i + 1];
+            if (cur?.type === "text" && next?.type === "text") {
+                cur.content += next.content;
+                this.editSegments.splice(i + 1, 1);
+                i--;
+            }
+        }
+    }
+
+    private deleteWordBeforeCursor(): void {
+        if (this.cursorPos <= 0) return;
+        const target = this.findWordBoundaryBackward(this.editBuffer, this.cursorPos);
+        const from = this.clampPosToPasteBoundary(target, "backward");
+        this.deleteRange(from, this.cursorPos);
+    }
+
+    private deleteWordAfterCursor(): void {
+        if (this.cursorPos >= this.getContentLength()) return;
+        const target = this.findWordBoundaryForward(this.editBuffer, this.cursorPos);
+        const to = this.clampPosToPasteBoundary(target, "forward");
+        this.deleteRange(this.cursorPos, to);
     }
 
     // ── Editing ─────────────────────────────────────────────────────
@@ -962,6 +1153,19 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
             return true;
         }
 
+        // Word deletion (matches pi-tui editor: Ctrl+W / Alt+Backspace, Alt+D / Alt+Delete)
+        if (matchesKey(key, "ctrl+w") || matchesKey(key, "alt+backspace")) {
+            this.deleteWordBeforeCursor();
+            this.invalidate();
+            return true;
+        }
+
+        if (matchesKey(key, "alt+d") || matchesKey(key, "alt+delete")) {
+            this.deleteWordAfterCursor();
+            this.invalidate();
+            return true;
+        }
+
         if (matchesKey(key, "backspace")) {
             this.deleteBeforeCursor();
             this.invalidate();
@@ -970,6 +1174,27 @@ class SelectWithMessageComponent<T> implements Component, Focusable {
 
         if (matchesKey(key, "delete")) {
             this.deleteAfterCursor();
+            this.invalidate();
+            return true;
+        }
+
+        // Word movement (matches pi-tui editor: Alt/Ctrl+Left/Right, Alt+B/F)
+        if (
+            matchesKey(key, "alt+left") ||
+            matchesKey(key, "ctrl+left") ||
+            matchesKey(key, "alt+b")
+        ) {
+            this.moveCursorWordLeft();
+            this.invalidate();
+            return true;
+        }
+
+        if (
+            matchesKey(key, "alt+right") ||
+            matchesKey(key, "ctrl+right") ||
+            matchesKey(key, "alt+f")
+        ) {
+            this.moveCursorWordRight();
             this.invalidate();
             return true;
         }
