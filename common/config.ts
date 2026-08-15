@@ -29,6 +29,8 @@ export interface SandboxConfigCwdConfinement {
     enabled?: boolean;  // default: true
     permission?: "allow" | "allow:sandbox";  // default: "allow:sandbox"
     commands?: string[];  // restrict heuristic to these known commands (default: all known)
+    denyPaths?: string[];  // additional sensitive path segment patterns (glob, e.g. "*.secret")
+    blockDotfiles?: boolean;  // treat any dotfile/dotdir segment as sensitive (default: false)
 }
 
 export interface SandboxConfigHeuristics {
@@ -78,6 +80,8 @@ function tryLoad(path: string): SandboxConfig | null {
                     enabled: data.heuristics.cwdConfinement.enabled,
                     permission: data.heuristics.cwdConfinement.permission,
                     commands: data.heuristics.cwdConfinement.commands,
+                    denyPaths: data.heuristics.cwdConfinement.denyPaths,
+                    blockDotfiles: data.heuristics.cwdConfinement.blockDotfiles,
                 } : undefined,
             } : undefined,
         } as SandboxConfig;
@@ -178,10 +182,16 @@ function mergeCwdConfinement(
         return base;
     }
 
+    const denyPaths = [
+        ...new Set([...(base.denyPaths ?? []), ...(override.denyPaths ?? [])]),
+    ];
+
     return {
         enabled: override.enabled ?? base.enabled,
         permission: override.permission ?? base.permission,
         commands: override.commands ?? base.commands,
+        denyPaths: denyPaths.length > 0 ? denyPaths : undefined,
+        blockDotfiles: override.blockDotfiles ?? base.blockDotfiles,
     };
 }
 

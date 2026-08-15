@@ -144,6 +144,8 @@ directory (the folder pi was started from):
 - `enabled` (default: `true`) - Whether the heuristic is active
 - `permission` (default: `"allow:sandbox"`) - Permission granted when the heuristic applies (`"allow"` or `"allow:sandbox"`)
 - `commands` (default: all known commands) - Restrict the heuristic to a subset of known commands
+- `denyPaths` (default: `[]`) - Additional sensitive path segment patterns (glob, e.g. `"*.secret"`) that make the heuristic ineligible
+- `blockDotfiles` (default: `false`) - Treat any dotfile/dotdir path segment as sensitive (paranoid mode)
 
 **How it works:**
 
@@ -160,6 +162,17 @@ Commands with dangerous flag usage are excluded even when known — e.g.
 the permission system. Commands invoked by path (e.g. `./cat`, `/tmp/cat`) are
 never trusted by the heuristic.
 
+**Sensitive paths:** paths touching credential material always make the
+heuristic ineligible. Matching is done per path segment of the resolved path,
+so `cat src/.env` and `cat keys/server.pem` are caught. The built-in list
+covers `.env*`, `.git`, credential directories (`.ssh`, `.aws`, `.gnupg`,
+`.kube`, `.docker`, ...), credential files (`.netrc`, `.npmrc`, `.pgpass`, ...),
+private keys (`id_rsa*`, `*.pem`, `*.key`, `*.p12`, ...), `*.tfvars`, and
+`credentials`. Use `denyPaths` to add your own patterns (the built-in list
+always applies) or `blockDotfiles` for a blanket dotfile ban. Note that this
+check is path-based: commands that read whole directories (e.g. `grep -r .`)
+can still *traverse into* sensitive files within the working directory.
+
 **Example:**
 
 ```json
@@ -168,7 +181,9 @@ never trusted by the heuristic.
         "cwdConfinement": {
             "enabled": true,
             "permission": "allow:sandbox",
-            "commands": ["cat", "ls", "grep", "find"]
+            "commands": ["cat", "ls", "grep", "find"],
+            "denyPaths": ["*.sqlite", "backups"],
+            "blockDotfiles": false
         }
     }
 }

@@ -195,9 +195,46 @@ const SPECIAL_ALLOWED_PATHS = new Set([
     "/dev/stderr",
 ]);
 
+/**
+ * Sensitive path segments that always make the heuristic ineligible
+ * (glob-matched against every segment of the resolved path).
+ */
+const DEFAULT_SENSITIVE_PATTERNS = [
+    // environment files
+    ".env", ".env.*",
+    // VCS internals (e.g. .git/config may embed tokens in remote URLs)
+    ".git",
+    // credential directories
+    ".ssh", ".aws", ".azure", ".gnupg", ".kube", ".docker", ".gcloud",
+    // credential files
+    ".netrc", ".npmrc", ".pypirc", ".pgpass", ".my.cnf", ".htpasswd",
+    // private keys
+    "id_rsa*", "id_ed25519*", "id_ecdsa*", "id_dsa*",
+    "*.pem", "*.key", "*.p12", "*.pfx", "*.keystore", "*.jks",
+    // infra secrets
+    "*.tfvars",
+    "credentials",
+];
+
+function segmentGlobToRegex(pattern: string): RegExp {
+    const escaped = pattern
+        .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+        .replaceAll("*", ".*")
+        .replaceAll("?", ".");
+    return new RegExp("^" + escaped + "$");
+}
+
+const DEFAULT_SENSITIVE_REGEXES = DEFAULT_SENSITIVE_PATTERNS.map(segmentGlobToRegex);
+
 const REDIRECTION_OPERATORS = new Set([">", ">>", "<", "2>", "2>>"]);
 
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+interface ConfinementOptions {
+    allowedCommands: Set<string> | null;
+    sensitivePatterns: RegExp[];
+    blockDotfiles: boolean;
+}
 
 function resolvePath(p: string, cwd: string, home: string): string {
     let expanded = p;
@@ -205,6 +242,39 @@ function resolvePath(p: string, cwd: string, home: string): string {
         expanded = home + p.slice(1);
     }
     return path.resolve(cwd, expanded);
+}
+
+/**
+ * Check whether a resolved path touches a sensitive segment.
+ * Checked against every segment of the resolved path, so e.g. "src/.env"
+ * and "keys/server.pem" are caught.
+ */
+function isSensitivePath(
+    p: string,
+    cwd: string,
+    home: string,
+    options: ConfinementOptions,
+): boolean {
+    const resolved = resolvePath(p, cwd, home);
+    const segments = resolved
+        .split(path.sep)
+        .filter((s) => s !== "" && s !== "." && s !== "..");
+
+    for (const segment of segments) {
+        if (options.blockDotfiles && segment.startsWith(".")) {
+            return true;
+        }
+
+        if (DEFAULT_SENSITIVE_REGEXES.some((r) => r.test(segment))) {
+            return true;
+        }
+
+        if (options.sensitivePatterns.some((r) => r.test(segment))) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 /**
@@ -314,7 +384,7 @@ function extractCommandPaths(
     args: string[],
     spec: CommandSpec,
     cwd: string,
-    allowedCommands: Set<string> | null,
+    options: ConfinementOptions,
 ): string[] | null {
     const paths: string[] = [];
     let afterDoubleDash = false;
@@ -345,7 +415,7 @@ function extractCommandPaths(
                 }
 
                 if (isSubshell(target) || isProcessSubstitution(target)) {
-                    if (!isConfined(getSubshellContent(target), cwd, allowedCommands)) {
+                    if (!isConfined(getSubshellContent(target), cwd, options)) {
                         return null;
                     }
                 } else {
@@ -355,7 +425,7 @@ function extractCommandPaths(
             }
 
             if (isSubshell(arg) || isProcessSubstitution(arg)) {
-                if (!isConfined(getSubshellContent(arg), cwd, allowedCommands)) {
+                if (!isConfined(getSubshellContent(arg), cwd, options)) {
                     return null;
                 }
                 continue;
@@ -462,7 +532,7 @@ function splitAtChainOperators(args: string[]): string[][] {
 function isCommandConfined(
     args: string[],
     cwd: string,
-    allowedCommands: Set<string> | null,
+    options: ConfinementOptions,
 ): boolean {
     // skip leading environment assignments (FOO=bar cmd ...)
     let idx = 0;
@@ -486,17 +556,20 @@ function isCommandConfined(
         return false;
     }
 
-    if (allowedCommands !== null && !allowedCommands.has(commandName)) {
+    if (options.allowedCommands !== null && !options.allowedCommands.has(commandName)) {
         return false;
     }
 
-    const paths = extractCommandPaths(args.slice(idx), spec, cwd, allowedCommands);
+    const paths = extractCommandPaths(args.slice(idx), spec, cwd, options);
     if (paths === null) {
         return false;
     }
 
     const home = os.homedir();
-    return paths.every((p) => isAllowedPath(p, cwd, home));
+    return paths.every(
+        (p) =>
+            isAllowedPath(p, cwd, home) && !isSensitivePath(p, cwd, home, options),
+    );
 }
 
 /**
@@ -506,7 +579,7 @@ function isCommandConfined(
 function isConfined(
     command: string,
     cwd: string,
-    allowedCommands: Set<string> | null,
+    options: ConfinementOptions,
 ): boolean {
     let parsed: string[][];
     try {
@@ -523,7 +596,7 @@ function isConfined(
         const segments = splitAtChainOperators(cmdArgs);
         return (
             segments.length > 0 &&
-            segments.every((segment) => isCommandConfined(segment, cwd, allowedCommands))
+            segments.every((segment) => isCommandConfined(segment, cwd, options))
         );
     });
 }
@@ -556,11 +629,13 @@ export function getCwdConfinementPermission(
     }
 
     const resolvedCwd = path.resolve(cwd);
-    const allowedCommands = confinement?.commands
-        ? new Set(confinement.commands)
-        : null;
+    const options: ConfinementOptions = {
+        allowedCommands: confinement?.commands ? new Set(confinement.commands) : null,
+        sensitivePatterns: (confinement?.denyPaths ?? []).map(segmentGlobToRegex),
+        blockDotfiles: confinement?.blockDotfiles ?? false,
+    };
 
-    if (!isConfined(command, resolvedCwd, allowedCommands)) {
+    if (!isConfined(command, resolvedCwd, options)) {
         return undefined;
     }
 

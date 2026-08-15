@@ -16,7 +16,12 @@ Heuristics can grant a permission when **no explicit permission pattern matched*
 - Commands invoked by path (`./cat`, `/tmp/cat`) are never trusted (basename lookup would allow a malicious binary masquerading as a known command).
 - Subshells/process substitutions (including redirection targets) recurse through `isConfined`.
 - `/dev/null` etc. are allowlisted as special paths (sandbox devtmpfs).
-- Config: `heuristics.cwdConfinement` = `{ enabled (default true), permission (default "allow:sandbox"), commands (allowlist over registry) }`; merged field-wise in `common/config.ts`.
+- Config: `heuristics.cwdConfinement` = `{ enabled (default true), permission (default "allow:sandbox"), commands (allowlist over registry), denyPaths (extra sensitive segment globs), blockDotfiles (paranoid mode) }`; merged field-wise in `common/config.ts` (denyPaths concatenated + deduped).
+
+## Sensitive paths (secrets protection, "layer 1")
+
+- `DEFAULT_SENSITIVE_PATTERNS` in heuristics.ts: glob per resolved-path segment — `.env*`, `.git`, credential dirs (`.ssh`/`.aws`/`.gnupg`/`.kube`/`.docker`/`.gcloud`), credential files (`.netrc`/`.npmrc`/`.pgpass`/`.my.cnf`/`.htpasswd`), private keys (`id_rsa*`, `*.pem`, `*.key`, `*.p12`, ...), `*.tfvars`, `credentials`. Always applies; `denyPaths` extends it.
+- Known hole (documented): path-based checks don't cover traversal reads — `grep -r token .` reads `.env` content while the path arg is `.`. Discussed but not implemented: sandbox masking via `--ro-bind /dev/null <secret>` (layer 2), tool_result output redaction (layer 3).
 
 ## Known limitations (documented in docs/configuration.md)
 

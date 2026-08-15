@@ -140,6 +140,62 @@ describe("getCwdConfinementPermission", () => {
         ]);
     });
 
+    describe("sensitive paths", () => {
+        runTests([
+            { desc: ".env file", command: "cat .env", expected: undefined },
+            { desc: ".env variant", command: "cat .env.local", expected: undefined },
+            { desc: ".env in subdirectory", command: "cat src/.env", expected: undefined },
+            { desc: ".env via parent traversal", command: "cat src/../.env", expected: undefined },
+            { desc: ".git config", command: "cat .git/config", expected: undefined },
+            { desc: ".git dir listing", command: "ls .git", expected: undefined },
+            { desc: "ssh dir", command: "cat .ssh/config", expected: undefined },
+            { desc: "aws dir", command: "ls .aws", expected: undefined },
+            { desc: "npmrc", command: "cat .npmrc", expected: undefined },
+            { desc: "netrc", command: "cat .netrc", expected: undefined },
+            { desc: "private key by name", command: "cat id_rsa", expected: undefined },
+            { desc: "private key by extension", command: "cat keys/server.pem", expected: undefined },
+            { desc: "key extension", command: "cat tls.key", expected: undefined },
+            { desc: "p12 bundle", command: "cat cert.p12", expected: undefined },
+            { desc: "tfvars", command: "cat prod.tfvars", expected: undefined },
+            { desc: "credentials file", command: "cat credentials", expected: undefined },
+            { desc: "redirect into sensitive file", command: "echo x > .env", expected: undefined },
+            { desc: "glob arg touching nothing sensitive", command: "cat src/*", expected: "allow:sandbox" },
+            { desc: ".gitignore is not sensitive", command: "cat .gitignore", expected: "allow:sandbox" },
+            { desc: ".github dir is not sensitive", command: "ls .github", expected: "allow:sandbox" },
+            { desc: "regular config file is not sensitive", command: "cat config/database.yml", expected: "allow:sandbox" },
+            { desc: "file containing 'key' is not sensitive", command: "cat monkey.txt", expected: "allow:sandbox" },
+            {
+                desc: "blockDotfiles rejects dotfiles",
+                command: "cat .gitignore",
+                config: { blockDotfiles: true },
+                expected: undefined,
+            },
+            {
+                desc: "blockDotfiles still allows regular files",
+                command: "cat file.txt",
+                config: { blockDotfiles: true },
+                expected: "allow:sandbox",
+            },
+            {
+                desc: "custom denyPaths pattern",
+                command: "cat data/db.sqlite",
+                config: { denyPaths: ["*.sqlite"] },
+                expected: undefined,
+            },
+            {
+                desc: "custom denyPaths pattern, unaffected file",
+                command: "cat data/db.txt",
+                config: { denyPaths: ["*.sqlite"] },
+                expected: "allow:sandbox",
+            },
+            {
+                desc: "grep pattern slot does not trigger sensitive check",
+                command: "grep .env file.txt",
+                expected: "allow:sandbox",
+            },
+        ]);
+    });
+
     describe("configuration", () => {
         runTests([
             {

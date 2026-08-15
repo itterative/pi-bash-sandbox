@@ -109,6 +109,18 @@
               "items": {
                 "type": "string"
               }
+            },
+            "denyPaths": {
+              "type": "array",
+              "description": "Additional sensitive path segment patterns (glob, e.g. '*.secret') that make the heuristic ineligible. The built-in list (.env, *.pem, id_rsa*, .ssh, .git, ...) always applies.",
+              "items": {
+                "type": "string"
+              }
+            },
+            "blockDotfiles": {
+              "type": "boolean",
+              "description": "Treat any dotfile/dotdir path segment as sensitive (paranoid mode)",
+              "default": false
             }
           }
         }
