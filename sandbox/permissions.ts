@@ -343,8 +343,9 @@ function getSingleCommandPermission(
     commands: string[],
     permissions: PermissionMatch[],
     fallback: Permission = "ask",
-): Permission {
+): { permission: Permission; matched: boolean } {
     let match: Permission = fallback;
+    let matched = false;
 
     // note: this will match the last one (similar to opencode)
     //       could also try a specificity approach
@@ -355,12 +356,13 @@ function getSingleCommandPermission(
             }
 
             match = permission.value;
+            matched = true;
         } catch {
             continue;
         }
     }
 
-    return match;
+    return { permission: match, matched };
 }
 
 /**
@@ -372,16 +374,16 @@ function moreRestrictive(a: Permission, b: Permission): Permission {
     return order.indexOf(a) > order.indexOf(b) ? a : b;
 }
 
-export default function getPermission(
+export function getPermissionMatch(
     command: string,
     configPermissions?: SandboxConfigPermissions,
-): Permission {
+): { permission: Permission; matched: boolean } {
     let permissions: PermissionMatch[];
 
     try {
         permissions = getPermissions(configPermissions);
     } catch {
-        return "ask";
+        return { permission: "ask", matched: false };
     }
 
     // Handle empty command as a special case for backward compatibility
@@ -392,12 +394,29 @@ export default function getPermission(
     const parsedCommands = parseBash(command);
 
     if (parsedCommands.length === 0) {
-        return defaultPermission;
+        return { permission: defaultPermission, matched: false };
     }
 
     // Return the most restrictive permission across all commands
-    return parsedCommands.reduce<Permission>((mostRestrictive, cmd) => {
-        const perm = getSingleCommandPermission(cmd, permissions, defaultPermission);
-        return moreRestrictive(mostRestrictive, perm);
-    }, "allow");
+    return parsedCommands.reduce<{ permission: Permission; matched: boolean }>(
+        (result, cmd) => {
+            const { permission, matched } = getSingleCommandPermission(
+                cmd,
+                permissions,
+                defaultPermission,
+            );
+            return {
+                permission: moreRestrictive(result.permission, permission),
+                matched: result.matched || matched,
+            };
+        },
+        { permission: "allow", matched: false },
+    );
+}
+
+export default function getPermission(
+    command: string,
+    configPermissions?: SandboxConfigPermissions,
+): Permission {
+    return getPermissionMatch(command, configPermissions).permission;
 }

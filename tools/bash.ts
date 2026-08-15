@@ -9,7 +9,8 @@ import type {
 import sandboxConfig from "../common/config";
 import { ALLOWED_COMMAND_ENTRY_TYPE, type AllowedCommandEntry } from "../common/audit";
 import sandbox from "../sandbox/bubblewrap";
-import getPermission, { Permission } from "../sandbox/permissions";
+import { getPermissionMatch, Permission } from "../sandbox/permissions";
+import { getCwdConfinementPermission } from "../sandbox/heuristics";
 import { selectWithMessage, type SelectMessageItem } from "../components/select-with-message";
 
 // FIXME: use the import instead of this (where is it exported from though? ide complains of @earendil-works/pi-coding-agent/core/extensions)
@@ -105,7 +106,19 @@ Pay attention to these notes as they provide context about the user's preference
 
         let permission: Permission = "ask";
         try {
-            permission = getPermission(event.input.command);
+            const result = getPermissionMatch(event.input.command);
+            permission = result.permission;
+
+            // heuristics only apply when no explicit permission pattern matched
+            if (!result.matched) {
+                const heuristicPermission = getCwdConfinementPermission(
+                    event.input.command,
+                    ctx.cwd ?? process.cwd(),
+                );
+                if (heuristicPermission) {
+                    permission = heuristicPermission;
+                }
+            }
         } catch (e) {
             ctx.ui.notify(`pi-bash-sandbox: ${e}`, "warning");
         }

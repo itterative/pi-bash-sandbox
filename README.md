@@ -6,6 +6,7 @@ Bash sandboxing for pi - a secure way to execute shell commands with configurabl
 
 - **Sandboxed command execution** using [bubblewrap](https://github.com/containers/bubblewrap)
 - **Configurable permissions** - allow, deny, ask, or sandbox specific commands; set a default with `**`
+- **Cwd-confinement heuristic** - known safe commands (cat, ls, grep, find, ...) are auto-allowed when all their file accesses stay within the working directory
 - **Filesystem isolation** - bind-mounted directories with read-only or read-write access
 - **Pattern-based matching** - use wildcards to match command patterns
 - **User notes** - add context to your decisions that the agent can see

@@ -25,6 +25,16 @@ export interface SandboxConfigAudit {
     model?: string;
 }
 
+export interface SandboxConfigCwdConfinement {
+    enabled?: boolean;  // default: true
+    permission?: "allow" | "allow:sandbox";  // default: "allow:sandbox"
+    commands?: string[];  // restrict heuristic to these known commands (default: all known)
+}
+
+export interface SandboxConfigHeuristics {
+    cwdConfinement?: SandboxConfigCwdConfinement;
+}
+
 export interface SandboxConfig {
     sandbox: {
         mounts: SandboxConfigMounts;
@@ -35,6 +45,7 @@ export interface SandboxConfig {
     };
     permissions: SandboxConfigPermissions;
     audit?: SandboxConfigAudit;
+    heuristics?: SandboxConfigHeuristics;
 }
 
 function tryLoad(path: string): SandboxConfig | null {
@@ -61,6 +72,13 @@ function tryLoad(path: string): SandboxConfig | null {
             audit: data.audit ? {
                 provider: data.audit.provider,
                 model: data.audit.model,
+            } : undefined,
+            heuristics: data.heuristics ? {
+                cwdConfinement: data.heuristics.cwdConfinement ? {
+                    enabled: data.heuristics.cwdConfinement.enabled,
+                    permission: data.heuristics.cwdConfinement.permission,
+                    commands: data.heuristics.cwdConfinement.commands,
+                } : undefined,
             } : undefined,
         } as SandboxConfig;
     } catch (e) {
@@ -148,6 +166,42 @@ function mergeHomeMounts(
     return merged;
 }
 
+function mergeCwdConfinement(
+    base: SandboxConfigCwdConfinement | undefined,
+    override: SandboxConfigCwdConfinement | undefined
+): SandboxConfigCwdConfinement | undefined {
+    if (!base) {
+        return override;
+    }
+
+    if (!override) {
+        return base;
+    }
+
+    return {
+        enabled: override.enabled ?? base.enabled,
+        permission: override.permission ?? base.permission,
+        commands: override.commands ?? base.commands,
+    };
+}
+
+function mergeHeuristics(
+    base: SandboxConfigHeuristics | undefined,
+    override: SandboxConfigHeuristics | undefined
+): SandboxConfigHeuristics | undefined {
+    if (!base) {
+        return override;
+    }
+
+    if (!override) {
+        return base;
+    }
+
+    return {
+        cwdConfinement: mergeCwdConfinement(base.cwdConfinement, override.cwdConfinement),
+    };
+}
+
 function mergeConfigs(global: SandboxConfig | null, project: SandboxConfig | null): SandboxConfig {
     const base = global ?? defaultConfig();
 
@@ -165,6 +219,7 @@ function mergeConfigs(global: SandboxConfig | null, project: SandboxConfig | nul
         },
         permissions: mergeRecordsOrDefault(base.permissions, project.permissions, {}),
         audit: project.audit ?? base.audit,
+        heuristics: mergeHeuristics(base.heuristics, project.heuristics),
     };
 }
 

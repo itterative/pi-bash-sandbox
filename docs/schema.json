@@ -83,6 +83,36 @@
           "description": "The model ID to use (e.g., 'gpt-4o', 'claude-3-5-sonnet')"
         }
       }
+    },
+    "heuristics": {
+      "type": "object",
+      "description": "Heuristics that can grant permissions without an explicit permission pattern match",
+      "properties": {
+        "cwdConfinement": {
+          "type": "object",
+          "description": "Allow known safe commands whose file accesses all stay within the working directory",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Whether the heuristic is enabled",
+              "default": true
+            },
+            "permission": {
+              "type": "string",
+              "enum": ["allow", "allow:sandbox"],
+              "description": "Permission granted when the heuristic applies",
+              "default": "allow:sandbox"
+            },
+            "commands": {
+              "type": "array",
+              "description": "Restrict the heuristic to these known commands (default: all known commands)",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
     }
   },
   "required": ["permissions"],

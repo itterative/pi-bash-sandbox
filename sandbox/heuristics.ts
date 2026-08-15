@@ -1,0 +1,568 @@
+import os from "node:os";
+import path from "node:path";
+
+import sandboxConfig, { type SandboxConfigCwdConfinement } from "../common/config";
+import { type Permission } from "./permissions";
+import {
+    parseBash,
+    isHeredocOperator,
+    isSubshell,
+    isProcessSubstitution,
+    getSubshellContent,
+} from "./bash";
+
+/**
+ * Argument semantics for a known command, used by the cwd-confinement
+ * heuristic to figure out which arguments may access the filesystem.
+ *
+ * Extraction is conservative: any argument that cannot be classified is
+ * treated as a file path and must resolve inside the working directory.
+ * Arguments are only skipped when consumed by a `valueFlag` (whose value
+ * must definitely not be a path) or by the "first-pattern" positional mode
+ * (e.g. grep's pattern argument).
+ */
+export interface CommandSpec {
+    /**
+     * How to treat positional (non-flag) arguments:
+     * - "paths" (default): every positional is a file path
+     * - "none": the command takes no positionals; any positional is ineligible
+     * - "ignore": positionals are data, not paths (e.g. echo)
+     * - "first-pattern": the first positional is a pattern (e.g. grep),
+     *   unless a patternBypassFlag appears anywhere in the arguments
+     */
+    positionals?: "paths" | "none" | "ignore" | "first-pattern";
+    /** Flags whose value (next arg or inline) is definitely NOT a path. */
+    valueFlags?: string[];
+    /** Flags whose value (next arg or inline) IS a path. */
+    pathFlags?: string[];
+    /** Flags that make the command ineligible for the heuristic. */
+    unsafeFlags?: string[];
+    /** For "first-pattern": flags that provide the pattern, making all positionals paths. */
+    patternBypassFlags?: string[];
+}
+
+/**
+ * Registry of commands known to the cwd-confinement heuristic.
+ *
+ * Only commands that cannot modify files outside of explicitly given paths
+ * (or execute other programs) should be listed here. Unknown commands fall
+ * back to the permission system.
+ */
+export const KNOWN_COMMANDS: Record<string, CommandSpec> = {
+    // file readers
+    cat: {},
+    head: { valueFlags: ["-n", "-c", "--lines", "--bytes"] },
+    tail: {
+        valueFlags: ["-n", "-c", "--lines", "--bytes", "-s", "--sleep-interval", "--pid"],
+    },
+    less: {},
+    more: {},
+    wc: { pathFlags: ["--files0-from"] },
+    file: {
+        valueFlags: ["-F", "--separator"],
+        pathFlags: ["-f", "--files-from", "-m", "--magic-file"],
+    },
+    stat: { valueFlags: ["-c", "--format", "--printf"] },
+
+    // directory readers
+    ls: {},
+    dir: {},
+    vdir: {},
+    du: {
+        valueFlags: ["-B", "--block-size", "-t", "--threshold", "--time-style"],
+        pathFlags: ["--files0-from"],
+    },
+    tree: {
+        valueFlags: ["-L", "-P", "-I", "--filelimit", "--charset"],
+        pathFlags: ["-o"],
+    },
+
+    // path manipulation
+    realpath: {},
+    readlink: {},
+    basename: { valueFlags: ["-s", "--suffix"] },
+    dirname: {},
+    cd: {},
+
+    // text processing
+    grep: {
+        positionals: "first-pattern",
+        patternBypassFlags: ["-e", "--regexp", "-f", "--file"],
+        valueFlags: [
+            "-e", "--regexp",
+            "-m", "--max-count",
+            "-A", "--after-context",
+            "-B", "--before-context",
+            "-C", "--context",
+            "--label",
+            "--include", "--exclude", "--exclude-dir",
+            "--binary-files",
+            "-D", "--directories",
+            "-d", "--devices",
+            "--group-separator",
+            "--color", "--colour",
+        ],
+        pathFlags: ["-f", "--file", "--exclude-from"],
+    },
+    egrep: {
+        positionals: "first-pattern",
+        patternBypassFlags: ["-e", "--regexp", "-f", "--file"],
+        valueFlags: [
+            "-e", "--regexp",
+            "-m", "--max-count",
+            "-A", "--after-context",
+            "-B", "--before-context",
+            "-C", "--context",
+            "--label",
+            "--include", "--exclude", "--exclude-dir",
+            "--binary-files",
+            "-D", "--directories",
+            "-d", "--devices",
+            "--group-separator",
+            "--color", "--colour",
+        ],
+        pathFlags: ["-f", "--file", "--exclude-from"],
+    },
+    fgrep: {
+        positionals: "first-pattern",
+        patternBypassFlags: ["-e", "--regexp", "-f", "--file"],
+        valueFlags: [
+            "-e", "--regexp",
+            "-m", "--max-count",
+            "-A", "--after-context",
+            "-B", "--before-context",
+            "-C", "--context",
+            "--label",
+            "--include", "--exclude", "--exclude-dir",
+            "--binary-files",
+            "-D", "--directories",
+            "-d", "--devices",
+            "--group-separator",
+            "--color", "--colour",
+        ],
+        pathFlags: ["-f", "--file", "--exclude-from"],
+    },
+    sort: {
+        valueFlags: [
+            "-k", "--key",
+            "-t", "--field-separator",
+            "-S", "--buffer-size",
+            "--parallel",
+            "--batch-size",
+        ],
+        pathFlags: ["-o", "--output", "-T", "--temporary-dir", "--files0-from"],
+        // executes an external program
+        unsafeFlags: ["--compress-program"],
+    },
+    uniq: {
+        valueFlags: ["-s", "--skip-chars", "-w", "--check-chars", "-f", "--skip-fields"],
+    },
+    cut: {
+        valueFlags: ["-d", "--delimiter", "-f", "--fields", "-c", "--characters", "-b", "--bytes"],
+    },
+    paste: { valueFlags: ["-d", "--delimiters"] },
+    comm: {},
+    join: { valueFlags: ["-t", "-e", "-1", "-2", "-j", "-o", "-a", "-v"] },
+    tr: { positionals: "ignore" },
+
+    find: {
+        // flags that write files or execute commands
+        unsafeFlags: [
+            "-delete",
+            "-exec", "-execdir",
+            "-ok", "-okdir",
+            "-fls", "-fprint", "-fprint0", "-fprintf",
+        ],
+    },
+
+    // no filesystem arguments
+    pwd: { positionals: "none" },
+    true: { positionals: "none" },
+    false: { positionals: "none" },
+    echo: { positionals: "ignore" },
+    printf: { positionals: "ignore" },
+};
+
+// pseudo-files available inside the sandbox's devtmpfs
+const SPECIAL_ALLOWED_PATHS = new Set([
+    "/dev/null",
+    "/dev/zero",
+    "/dev/full",
+    "/dev/random",
+    "/dev/urandom",
+    "/dev/stdin",
+    "/dev/stdout",
+    "/dev/stderr",
+]);
+
+const REDIRECTION_OPERATORS = new Set([">", ">>", "<", "2>", "2>>"]);
+
+const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+
+function resolvePath(p: string, cwd: string, home: string): string {
+    let expanded = p;
+    if (p === "~" || p.startsWith("~/")) {
+        expanded = home + p.slice(1);
+    }
+    return path.resolve(cwd, expanded);
+}
+
+/**
+ * Check whether a path stays within the working directory, using lexical
+ * resolution only (symlinks are not followed).
+ */
+function isAllowedPath(p: string, cwd: string, home: string): boolean {
+    if (p === "") {
+        return true;
+    }
+
+    if (SPECIAL_ALLOWED_PATHS.has(p)) {
+        return true;
+    }
+
+    const resolved = resolvePath(p, cwd, home);
+    return resolved === cwd || resolved.startsWith(cwd + path.sep);
+}
+
+/**
+ * Check if any argument provides the pattern for a "first-pattern" command
+ * (e.g. grep -e foo, grep -ffoo, grep --regexp=foo). When present, all
+ * positional arguments are paths.
+ *
+ * False positives are safe: they only turn pattern arguments into
+ * path-checked arguments.
+ */
+function hasPatternBypass(args: string[], spec: CommandSpec): boolean {
+    const bypass = spec.patternBypassFlags ?? [];
+    const shortBypass = bypass
+        .filter((f) => !f.startsWith("--"))
+        .map((f) => f[1]);
+    const longBypass = bypass.filter((f) => f.startsWith("--"));
+
+    for (let i = 1; i < args.length; i++) {
+        const arg = args[i];
+
+        if (arg === "--") {
+            break;
+        }
+
+        if (arg.startsWith("--")) {
+            const name = arg.split("=", 1)[0];
+            if (longBypass.includes(name)) {
+                return true;
+            }
+        } else if (arg.length > 1 && arg.startsWith("-")) {
+            const cluster = arg.slice(1);
+            if (shortBypass.some((c) => cluster.includes(c))) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+/**
+ * Handle a short-flag cluster (e.g. -la, -n5, -efoo).
+ * Returns the new argument index, or null if the command is ineligible.
+ */
+function handleShortCluster(
+    args: string[],
+    index: number,
+    spec: CommandSpec,
+    paths: string[],
+): number | null {
+    const cluster = args[index].slice(1);
+
+    for (let j = 0; j < cluster.length; j++) {
+        const flag = "-" + cluster[j];
+
+        if (spec.unsafeFlags?.includes(flag)) {
+            return null;
+        }
+
+        if (spec.valueFlags?.includes(flag)) {
+            // inline value is the rest of the cluster, otherwise next arg
+            return j === cluster.length - 1 ? index + 1 : index;
+        }
+
+        if (spec.pathFlags?.includes(flag)) {
+            if (j === cluster.length - 1) {
+                const value = args[index + 1];
+                if (value === undefined) {
+                    return null;
+                }
+                paths.push(value);
+                return index + 1;
+            }
+            paths.push(cluster.slice(j + 1));
+            return index;
+        }
+
+        // unknown short flag: assume boolean, continue with the cluster
+    }
+
+    return index;
+}
+
+/**
+ * Extract all filesystem paths accessed by a single known command.
+ * Returns null if the command usage cannot be classified safely.
+ * args[0] is the command name.
+ */
+function extractCommandPaths(
+    args: string[],
+    spec: CommandSpec,
+    cwd: string,
+    allowedCommands: Set<string> | null,
+): string[] | null {
+    const paths: string[] = [];
+    let afterDoubleDash = false;
+    let positionalSeen = false;
+    const positionals = spec.positionals ?? "paths";
+    const patternProvided =
+        positionals !== "first-pattern" || hasPatternBypass(args, spec);
+
+    for (let i = 1; i < args.length; i++) {
+        const arg = args[i];
+
+        if (!afterDoubleDash) {
+            if (arg === "--") {
+                afterDoubleDash = true;
+                continue;
+            }
+
+            if (isHeredocOperator(arg)) {
+                // skip the delimiter
+                i++;
+                continue;
+            }
+
+            if (REDIRECTION_OPERATORS.has(arg)) {
+                const target = args[++i];
+                if (target === undefined) {
+                    return null;
+                }
+
+                if (isSubshell(target) || isProcessSubstitution(target)) {
+                    if (!isConfined(getSubshellContent(target), cwd, allowedCommands)) {
+                        return null;
+                    }
+                } else {
+                    paths.push(target);
+                }
+                continue;
+            }
+
+            if (isSubshell(arg) || isProcessSubstitution(arg)) {
+                if (!isConfined(getSubshellContent(arg), cwd, allowedCommands)) {
+                    return null;
+                }
+                continue;
+            }
+
+            if (arg.startsWith("--")) {
+                const eq = arg.indexOf("=");
+                const name = eq === -1 ? arg : arg.slice(0, eq);
+                const inline = eq === -1 ? undefined : arg.slice(eq + 1);
+
+                if (spec.unsafeFlags?.includes(name)) {
+                    return null;
+                }
+
+                if (spec.valueFlags?.includes(name)) {
+                    continue;
+                }
+
+                if (spec.pathFlags?.includes(name)) {
+                    const value = inline ?? args[++i];
+                    if (value === undefined) {
+                        return null;
+                    }
+                    paths.push(value);
+                    continue;
+                }
+
+                // unknown long flag with inline value: treat value as path
+                if (inline !== undefined) {
+                    paths.push(inline);
+                }
+                continue;
+            }
+
+            if (arg.length > 1 && arg.startsWith("-")) {
+                // whole-arg unsafe flags (e.g. find -delete, find -exec)
+                if (spec.unsafeFlags?.includes(arg)) {
+                    return null;
+                }
+
+                const next = handleShortCluster(args, i, spec, paths);
+                if (next === null) {
+                    return null;
+                }
+                i = next;
+                continue;
+            }
+        }
+
+        // positional argument
+        switch (positionals) {
+            case "none":
+                return null;
+            case "ignore":
+                continue;
+            case "first-pattern":
+                if (!positionalSeen && !patternProvided) {
+                    positionalSeen = true;
+                    continue;
+                }
+                paths.push(arg);
+                continue;
+            default:
+                paths.push(arg);
+        }
+    }
+
+    return paths;
+}
+
+const CHAIN_OPERATORS = new Set(["&&", "||", "|", ";", "&"]);
+
+/**
+ * Split a parsed command at chain operators. parseBash keeps operators like
+ * && and | as arguments of a single command, so each segment between them
+ * must be evaluated as its own command.
+ */
+function splitAtChainOperators(args: string[]): string[][] {
+    const segments: string[][] = [];
+    let current: string[] = [];
+
+    for (const arg of args) {
+        if (CHAIN_OPERATORS.has(arg)) {
+            if (current.length > 0) {
+                segments.push(current);
+                current = [];
+            }
+        } else {
+            current.push(arg);
+        }
+    }
+
+    if (current.length > 0) {
+        segments.push(current);
+    }
+
+    return segments;
+}
+
+/**
+ * Check whether a single parsed command is a known command whose file
+ * accesses all stay within the working directory.
+ */
+function isCommandConfined(
+    args: string[],
+    cwd: string,
+    allowedCommands: Set<string> | null,
+): boolean {
+    // skip leading environment assignments (FOO=bar cmd ...)
+    let idx = 0;
+    while (idx < args.length && ENV_ASSIGNMENT.test(args[idx])) {
+        idx++;
+    }
+
+    if (idx >= args.length) {
+        return false;
+    }
+
+    const commandName = args[idx];
+
+    // commands invoked by path are not trusted to be the real binary
+    if (commandName.includes("/") || commandName.includes("\\")) {
+        return false;
+    }
+
+    const spec = KNOWN_COMMANDS[commandName];
+    if (!spec) {
+        return false;
+    }
+
+    if (allowedCommands !== null && !allowedCommands.has(commandName)) {
+        return false;
+    }
+
+    const paths = extractCommandPaths(args.slice(idx), spec, cwd, allowedCommands);
+    if (paths === null) {
+        return false;
+    }
+
+    const home = os.homedir();
+    return paths.every((p) => isAllowedPath(p, cwd, home));
+}
+
+/**
+ * Check whether every command in a (possibly multi-line or chained) command
+ * string is known and confined to the working directory.
+ */
+function isConfined(
+    command: string,
+    cwd: string,
+    allowedCommands: Set<string> | null,
+): boolean {
+    let parsed: string[][];
+    try {
+        parsed = parseBash(command);
+    } catch {
+        return false;
+    }
+
+    if (parsed.length === 0) {
+        return false;
+    }
+
+    return parsed.every((cmdArgs) => {
+        const segments = splitAtChainOperators(cmdArgs);
+        return (
+            segments.length > 0 &&
+            segments.every((segment) => isCommandConfined(segment, cwd, allowedCommands))
+        );
+    });
+}
+
+/**
+ * Cwd-confinement heuristic: known, safe commands whose file accesses all
+ * resolve inside the working directory are granted the configured permission
+ * (default "allow:sandbox").
+ *
+ * Returns undefined when the heuristic does not apply — unknown commands,
+ * paths outside the working directory, or unclassifiable usage — in which
+ * case the caller should fall back to the permission system.
+ */
+export function getCwdConfinementPermission(
+    command: string,
+    cwd: string,
+    config?: SandboxConfigCwdConfinement | null,
+): Permission | undefined {
+    const confinement =
+        config === undefined
+            ? sandboxConfig.current?.heuristics?.cwdConfinement
+            : (config ?? undefined);
+
+    if (confinement?.enabled === false) {
+        return undefined;
+    }
+
+    if (command.trim() === "") {
+        return undefined;
+    }
+
+    const resolvedCwd = path.resolve(cwd);
+    const allowedCommands = confinement?.commands
+        ? new Set(confinement.commands)
+        : null;
+
+    if (!isConfined(command, resolvedCwd, allowedCommands)) {
+        return undefined;
+    }
+
+    return confinement?.permission ?? "allow:sandbox";
+}

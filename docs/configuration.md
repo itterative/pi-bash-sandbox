@@ -131,6 +131,56 @@ Controls which files from the home directory are mounted into the sandbox:
 - `model` - The model ID to use (e.g., "gpt-4o", "claude-3-5-sonnet")
 - If not specified, the current session model is used
 
+### `heuristics` (optional)
+
+Heuristics can grant a permission to commands that did **not** match any explicit
+permission pattern (including `**`). They never override an explicit pattern match.
+
+#### `heuristics.cwdConfinement` (optional)
+
+Allows known, safe commands whose file accesses all resolve inside the working
+directory (the folder pi was started from):
+
+- `enabled` (default: `true`) - Whether the heuristic is active
+- `permission` (default: `"allow:sandbox"`) - Permission granted when the heuristic applies (`"allow"` or `"allow:sandbox"`)
+- `commands` (default: all known commands) - Restrict the heuristic to a subset of known commands
+
+**How it works:**
+
+1. The command is parsed; every chained/piped command must be a *known* command
+   (e.g. `cat`, `ls`, `head`, `tail`, `grep`, `find`, `sort`, `wc`, `du`, `echo`, `cd`, ...)
+2. Using per-command argument knowledge, every path argument (positionals,
+   path-valued flags, redirection targets, subshell contents) is resolved
+   against the working directory
+3. If all paths stay inside the working directory, the configured permission is
+   granted; otherwise the command falls back to the permission system
+
+Commands with dangerous flag usage are excluded even when known — e.g.
+`find -delete`, `find -exec`, and `sort --compress-program` always fall back to
+the permission system. Commands invoked by path (e.g. `./cat`, `/tmp/cat`) are
+never trusted by the heuristic.
+
+**Example:**
+
+```json
+{
+    "heuristics": {
+        "cwdConfinement": {
+            "enabled": true,
+            "permission": "allow:sandbox",
+            "commands": ["cat", "ls", "grep", "find"]
+        }
+    }
+}
+```
+
+**Limitations:**
+
+- Path resolution is lexical; symlinks inside the working directory that point
+  outside it are not detected
+- Known commands are trusted to be the real system binaries found via `PATH`
+- The sandbox does not isolate the network namespace
+
 ### `sandbox.gitWorktreeSupport` (optional)
 
 Controls automatic detection and mounting of git worktree dependencies:
