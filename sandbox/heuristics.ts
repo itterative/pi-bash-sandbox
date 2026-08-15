@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -71,10 +72,14 @@ export const KNOWN_COMMANDS: Record<string, CommandSpec> = {
     du: {
         valueFlags: ["-B", "--block-size", "-t", "--threshold", "--time-style"],
         pathFlags: ["--files0-from"],
+        // -L follows symlinks during traversal
+        unsafeFlags: ["-L", "--dereference-all"],
     },
     tree: {
         valueFlags: ["-L", "-P", "-I", "--filelimit", "--charset"],
         pathFlags: ["-o"],
+        // -l follows symlinks to directories during traversal
+        unsafeFlags: ["-l"],
     },
 
     // path manipulation
@@ -103,6 +108,8 @@ export const KNOWN_COMMANDS: Record<string, CommandSpec> = {
             "--color", "--colour",
         ],
         pathFlags: ["-f", "--file", "--exclude-from"],
+        // -R follows symlinks during recursive traversal
+        unsafeFlags: ["-R", "--dereference-recursive"],
     },
     egrep: {
         positionals: "first-pattern",
@@ -122,6 +129,7 @@ export const KNOWN_COMMANDS: Record<string, CommandSpec> = {
             "--color", "--colour",
         ],
         pathFlags: ["-f", "--file", "--exclude-from"],
+        unsafeFlags: ["-R", "--dereference-recursive"],
     },
     fgrep: {
         positionals: "first-pattern",
@@ -141,6 +149,7 @@ export const KNOWN_COMMANDS: Record<string, CommandSpec> = {
             "--color", "--colour",
         ],
         pathFlags: ["-f", "--file", "--exclude-from"],
+        unsafeFlags: ["-R", "--dereference-recursive"],
     },
     sort: {
         valueFlags: [
@@ -172,6 +181,8 @@ export const KNOWN_COMMANDS: Record<string, CommandSpec> = {
             "-exec", "-execdir",
             "-ok", "-okdir",
             "-fls", "-fprint", "-fprint0", "-fprintf",
+            // follows symlinks during traversal
+            "-L",
         ],
     },
 
@@ -230,10 +241,27 @@ const REDIRECTION_OPERATORS = new Set([">", ">>", "<", "2>", "2>>"]);
 
 const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
+/**
+ * Environment variable names that can alter how the (trusted) command itself
+ * behaves — code injection or PATH shadowing — so any assignment to them
+ * makes the heuristic ineligible.
+ */
+const DANGEROUS_ENV_NAMES = new Set([
+    "PATH", "IFS", "CDPATH",
+    "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "PROMPT_COMMAND",
+    "GCONV_PATH",
+]);
+
+function isDangerousEnvName(name: string): boolean {
+    return name.startsWith("LD_") || DANGEROUS_ENV_NAMES.has(name);
+}
+
 interface ConfinementOptions {
     allowedCommands: Set<string> | null;
     sensitivePatterns: RegExp[];
     blockDotfiles: boolean;
+    /** canonical cwd for symlink resolution; null disables the realpath check */
+    realCwd: string | null;
 }
 
 function resolvePath(p: string, cwd: string, home: string): string {
@@ -246,16 +274,8 @@ function resolvePath(p: string, cwd: string, home: string): string {
 
 /**
  * Check whether a resolved path touches a sensitive segment.
- * Checked against every segment of the resolved path, so e.g. "src/.env"
- * and "keys/server.pem" are caught.
  */
-function isSensitivePath(
-    p: string,
-    cwd: string,
-    home: string,
-    options: ConfinementOptions,
-): boolean {
-    const resolved = resolvePath(p, cwd, home);
+function hasSensitiveSegment(resolved: string, options: ConfinementOptions): boolean {
     const segments = resolved
         .split(path.sep)
         .filter((s) => s !== "" && s !== "." && s !== "..");
@@ -278,6 +298,20 @@ function isSensitivePath(
 }
 
 /**
+ * Check whether a path touches a sensitive segment. Checked against every
+ * segment of the resolved path, so e.g. "src/.env" and "keys/server.pem"
+ * are caught.
+ */
+function isSensitivePath(
+    p: string,
+    cwd: string,
+    home: string,
+    options: ConfinementOptions,
+): boolean {
+    return hasSensitiveSegment(resolvePath(p, cwd, home), options);
+}
+
+/**
  * Check whether a path stays within the working directory, using lexical
  * resolution only (symlinks are not followed).
  */
@@ -292,6 +326,67 @@ function isAllowedPath(p: string, cwd: string, home: string): boolean {
 
     const resolved = resolvePath(p, cwd, home);
     return resolved === cwd || resolved.startsWith(cwd + path.sep);
+}
+
+/**
+ * Check that a path stays within the canonical working directory after
+ * resolving symlinks. The kernel resolves full symlink chains (including
+ * intermediate directory components and loops), so a single realpath call
+ * catches e.g. `link1 -> link2 -> /etc/passwd`.
+ *
+ * Non-existent trailing components (e.g. write targets) are handled by
+ * canonicalizing the nearest existing ancestor — anything below it does not
+ * exist, so it cannot contain symlinks. Dangling symlinks (unresolvable
+ * target) are rejected: writing through them would create the file at the
+ * target location.
+ */
+function isRealPathConfined(
+    p: string,
+    cwd: string,
+    home: string,
+    options: ConfinementOptions,
+): boolean {
+    if (p === "" || SPECIAL_ALLOWED_PATHS.has(p)) {
+        return true;
+    }
+
+    const realCwd = options.realCwd;
+    if (realCwd === null) {
+        return true;
+    }
+
+    let current = resolvePath(p, cwd, home);
+
+    while (true) {
+        let stat: fs.Stats | undefined;
+        try {
+            stat = fs.lstatSync(current);
+        } catch {
+            stat = undefined;
+        }
+
+        if (stat) {
+            let real: string;
+            try {
+                real = fs.realpathSync(current);
+            } catch {
+                // dangling symlink or otherwise unresolvable path
+                return false;
+            }
+            if (real !== realCwd && !real.startsWith(realCwd + path.sep)) {
+                return false;
+            }
+            // a symlink can hide a sensitive target behind an innocent name
+            // (e.g. notes.txt -> .env), so check the canonical path too
+            return !hasSensitiveSegment(real, options);
+        }
+
+        const parent = path.dirname(current);
+        if (parent === current) {
+            return false;
+        }
+        current = parent;
+    }
 }
 
 /**
@@ -503,7 +598,7 @@ const CHAIN_OPERATORS = new Set(["&&", "||", "|", ";", "&"]);
  * && and | as arguments of a single command, so each segment between them
  * must be evaluated as its own command.
  */
-function splitAtChainOperators(args: string[]): string[][] {
+export function splitAtChainOperators(args: string[]): string[][] {
     const segments: string[][] = [];
     let current: string[] = [];
 
@@ -534,9 +629,18 @@ function isCommandConfined(
     cwd: string,
     options: ConfinementOptions,
 ): boolean {
-    // skip leading environment assignments (FOO=bar cmd ...)
+    // skip leading environment assignments (FOO=bar cmd ...), but reject
+    // assignments that can alter the command's behavior (LD_PRELOAD, PATH,
+    // ...) and path-check the values of the rest
     let idx = 0;
+    const envValues: string[] = [];
     while (idx < args.length && ENV_ASSIGNMENT.test(args[idx])) {
+        const eq = args[idx].indexOf("=");
+        const name = args[idx].slice(0, eq);
+        if (isDangerousEnvName(name)) {
+            return false;
+        }
+        envValues.push(args[idx].slice(eq + 1));
         idx++;
     }
 
@@ -566,10 +670,19 @@ function isCommandConfined(
     }
 
     const home = os.homedir();
-    return paths.every(
-        (p) =>
-            isAllowedPath(p, cwd, home) && !isSensitivePath(p, cwd, home, options),
-    );
+    const allPaths = [...envValues, ...paths];
+    return allPaths.every((p) => {
+        if (!isAllowedPath(p, cwd, home)) {
+            return false;
+        }
+        if (isSensitivePath(p, cwd, home, options)) {
+            return false;
+        }
+        if (!isRealPathConfined(p, cwd, home, options)) {
+            return false;
+        }
+        return true;
+    });
 }
 
 /**
@@ -601,6 +714,35 @@ function isConfined(
     });
 }
 
+function buildConfinementOptions(
+    confinement: SandboxConfigCwdConfinement | undefined,
+    cwd: string,
+): ConfinementOptions {
+    let realCwd: string | null = null;
+    if (confinement?.resolveSymlinks ?? true) {
+        try {
+            realCwd = fs.realpathSync(cwd);
+        } catch {
+            realCwd = null;
+        }
+    }
+
+    return {
+        allowedCommands: confinement?.commands ? new Set(confinement.commands) : null,
+        sensitivePatterns: (confinement?.denyPaths ?? []).map(segmentGlobToRegex),
+        blockDotfiles: confinement?.blockDotfiles ?? false,
+        realCwd,
+    };
+}
+
+function resolveConfinementConfig(
+    config?: SandboxConfigCwdConfinement | null,
+): SandboxConfigCwdConfinement | undefined {
+    return config === undefined
+        ? sandboxConfig.current?.heuristics?.cwdConfinement
+        : (config ?? undefined);
+}
+
 /**
  * Cwd-confinement heuristic: known, safe commands whose file accesses all
  * resolve inside the working directory are granted the configured permission
@@ -615,10 +757,7 @@ export function getCwdConfinementPermission(
     cwd: string,
     config?: SandboxConfigCwdConfinement | null,
 ): Permission | undefined {
-    const confinement =
-        config === undefined
-            ? sandboxConfig.current?.heuristics?.cwdConfinement
-            : (config ?? undefined);
+    const confinement = resolveConfinementConfig(config);
 
     if (confinement?.enabled === false) {
         return undefined;
@@ -629,13 +768,34 @@ export function getCwdConfinementPermission(
     }
 
     const resolvedCwd = path.resolve(cwd);
-    const options: ConfinementOptions = {
-        allowedCommands: confinement?.commands ? new Set(confinement.commands) : null,
-        sensitivePatterns: (confinement?.denyPaths ?? []).map(segmentGlobToRegex),
-        blockDotfiles: confinement?.blockDotfiles ?? false,
-    };
 
-    if (!isConfined(command, resolvedCwd, options)) {
+    if (!isConfined(command, resolvedCwd, buildConfinementOptions(confinement, resolvedCwd))) {
+        return undefined;
+    }
+
+    return confinement?.permission ?? "allow:sandbox";
+}
+
+/**
+ * Segment-level variant of the cwd-confinement heuristic: evaluates a single
+ * already-parsed command (list of arguments, no chain operators).
+ *
+ * Returns undefined when the heuristic does not apply.
+ */
+export function getArgsConfinementPermission(
+    args: string[],
+    cwd: string,
+    config?: SandboxConfigCwdConfinement | null,
+): Permission | undefined {
+    const confinement = resolveConfinementConfig(config);
+
+    if (confinement?.enabled === false || args.length === 0) {
+        return undefined;
+    }
+
+    const resolvedCwd = path.resolve(cwd);
+
+    if (!isCommandConfined(args, resolvedCwd, buildConfinementOptions(confinement, resolvedCwd))) {
         return undefined;
     }
 

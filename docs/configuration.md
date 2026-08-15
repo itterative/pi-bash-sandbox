@@ -133,8 +133,14 @@ Controls which files from the home directory are mounted into the sandbox:
 
 ### `heuristics` (optional)
 
-Heuristics can grant a permission to commands that did **not** match any explicit
-permission pattern (including `**`). They never override an explicit pattern match.
+Heuristics can grant a permission to commands that did **not** match any
+explicit permission pattern and would otherwise prompt (`ask`). They are
+evaluated per chain segment (see [Chained Commands](./permissions.md#chained-commands)):
+each segment between `&&`, `|`, `;`, etc. is checked independently. They never
+override an explicit pattern match, and they never override a non-`ask`
+default: with `"**": "deny"`, `"allow"`, or `"allow:sandbox"`, the default
+stands as-is (heuristics neither relax a `deny` default nor downgrade an
+`allow` default to sandboxed execution).
 
 #### `heuristics.cwdConfinement` (optional)
 
@@ -146,6 +152,7 @@ directory (the folder pi was started from):
 - `commands` (default: all known commands) - Restrict the heuristic to a subset of known commands
 - `denyPaths` (default: `[]`) - Additional sensitive path segment patterns (glob, e.g. `"*.secret"`) that make the heuristic ineligible
 - `blockDotfiles` (default: `false`) - Treat any dotfile/dotdir path segment as sensitive (paranoid mode)
+- `resolveSymlinks` (default: `true`) - Verify paths stay within the working directory after symlink resolution (via `realpath`)
 
 **How it works:**
 
@@ -183,7 +190,8 @@ can still *traverse into* sensitive files within the working directory.
             "permission": "allow:sandbox",
             "commands": ["cat", "ls", "grep", "find"],
             "denyPaths": ["*.sqlite", "backups"],
-            "blockDotfiles": false
+            "blockDotfiles": false,
+            "resolveSymlinks": true
         }
     }
 }
@@ -191,8 +199,17 @@ can still *traverse into* sensitive files within the working directory.
 
 **Limitations:**
 
-- Path resolution is lexical; symlinks inside the working directory that point
-  outside it are not detected
+- Symlink handling: path arguments are canonicalized with `realpath`, which
+  resolves full symlink chains (a link inside the repo pointing to a link
+  pointing outside is caught). Non-existent write targets are verified via
+  their nearest existing ancestor; dangling symlinks are rejected. Note the
+  check is time-of-check — the path could theoretically be swapped before
+  execution (TOCTOU), which matters only for adversarial setups
+- Symlinks *inside* a passed directory are not walked (impractical and racy);
+  instead, flags that make recursive commands follow symlinks during
+  traversal (`find -L`, `grep -R`, `du -L`, `tree -l`) make the heuristic
+  ineligible. The default traversal modes of these commands do not follow
+  symlinks
 - Known commands are trusted to be the real system binaries found via `PATH`
 - The sandbox does not isolate the network namespace
 

@@ -31,6 +31,7 @@ export interface SandboxConfigCwdConfinement {
     commands?: string[];  // restrict heuristic to these known commands (default: all known)
     denyPaths?: string[];  // additional sensitive path segment patterns (glob, e.g. "*.secret")
     blockDotfiles?: boolean;  // treat any dotfile/dotdir segment as sensitive (default: false)
+    resolveSymlinks?: boolean;  // verify paths stay within cwd after symlink resolution (default: true)
 }
 
 export interface SandboxConfigHeuristics {
@@ -82,6 +83,7 @@ function tryLoad(path: string): SandboxConfig | null {
                     commands: data.heuristics.cwdConfinement.commands,
                     denyPaths: data.heuristics.cwdConfinement.denyPaths,
                     blockDotfiles: data.heuristics.cwdConfinement.blockDotfiles,
+                    resolveSymlinks: data.heuristics.cwdConfinement.resolveSymlinks,
                 } : undefined,
             } : undefined,
         } as SandboxConfig;
@@ -192,6 +194,7 @@ function mergeCwdConfinement(
         commands: override.commands ?? base.commands,
         denyPaths: denyPaths.length > 0 ? denyPaths : undefined,
         blockDotfiles: override.blockDotfiles ?? base.blockDotfiles,
+        resolveSymlinks: override.resolveSymlinks ?? base.resolveSymlinks,
     };
 }
 

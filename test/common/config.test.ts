@@ -376,4 +376,49 @@ describe("config merging", () => {
             }
         });
     });
+
+    describe("heuristics merging", () => {
+        it("should merge cwdConfinement fields with project precedence and concat denyPaths", () => {
+            writeGlobalConfig({
+                permissions: {},
+                heuristics: {
+                    cwdConfinement: {
+                        enabled: false,
+                        permission: "allow:sandbox",
+                        commands: ["cat"],
+                        denyPaths: ["*.secret"],
+                        blockDotfiles: true,
+                    },
+                },
+            });
+            writeProjectConfig({
+                sandbox: { mounts: {} },
+                permissions: {},
+                heuristics: {
+                    cwdConfinement: {
+                        permission: "allow",
+                        denyPaths: ["*.db"],
+                    },
+                },
+            });
+
+            const originalGlobal = process.env.SANDBOX_CONFIG_PATH_GLOBAL;
+            process.env.SANDBOX_CONFIG_PATH_GLOBAL = globalConfigPath;
+
+            try {
+                clearConfigCache();
+                const loaded = config.load(projectDir);
+
+                expect(loaded.heuristics?.cwdConfinement).toEqual({
+                    enabled: false,           // from global
+                    permission: "allow",      // project overrides
+                    commands: ["cat"],        // from global
+                    denyPaths: ["*.secret", "*.db"],  // concatenated
+                    blockDotfiles: true,      // from global
+                });
+            } finally {
+                process.env.SANDBOX_CONFIG_PATH_GLOBAL = originalGlobal;
+            }
+        });
+    });
 });

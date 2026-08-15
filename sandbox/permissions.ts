@@ -369,7 +369,7 @@ function getSingleCommandPermission(
  * Return the more restrictive of two permissions.
  * Order: deny > ask > allow:sandbox > allow
  */
-function moreRestrictive(a: Permission, b: Permission): Permission {
+export function moreRestrictive(a: Permission, b: Permission): Permission {
     const order: Permission[] = ["allow", "allow:sandbox", "ask", "deny"];
     return order.indexOf(a) > order.indexOf(b) ? a : b;
 }
@@ -419,4 +419,23 @@ export default function getPermission(
     configPermissions?: SandboxConfigPermissions,
 ): Permission {
     return getPermissionMatch(command, configPermissions).permission;
+}
+
+/**
+ * Match a single already-parsed command (list of arguments) against the
+ * permission patterns.
+ */
+export function getArgsPermissionMatch(
+    args: string[],
+    configPermissions?: SandboxConfigPermissions,
+): { permission: Permission; matched: boolean } {
+    let permissions: PermissionMatch[];
+
+    try {
+        permissions = getPermissions(configPermissions);
+    } catch {
+        return { permission: "ask", matched: false };
+    }
+
+    return getSingleCommandPermission(args, permissions, defaultPermission);
 }

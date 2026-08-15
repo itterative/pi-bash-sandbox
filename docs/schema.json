@@ -121,6 +121,11 @@
               "type": "boolean",
               "description": "Treat any dotfile/dotdir path segment as sensitive (paranoid mode)",
               "default": false
+            },
+            "resolveSymlinks": {
+              "type": "boolean",
+              "description": "Verify paths stay within the working directory after symlink resolution (via realpath)",
+              "default": true
             }
           }
         }
