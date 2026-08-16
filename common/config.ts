@@ -40,6 +40,7 @@ export interface SandboxConfigHeuristics {
 
 export interface SandboxConfig {
     sandbox: {
+        enabled?: boolean;  // master switch for bubblewrap sandboxing (default: true)
         mounts: SandboxConfigMounts;
         env?: Record<string, string>;  // custom env vars
         inheritEnv?: SandboxConfigEnvFilter;  // filter for existing env vars
@@ -65,6 +66,7 @@ function tryLoad(path: string): SandboxConfig | null {
 
         return {
             sandbox: {
+                enabled: data.sandbox?.enabled,
                 mounts: data.sandbox?.mounts ?? {},
                 env: data.sandbox?.env,
                 inheritEnv: data.sandbox?.inheritEnv,
@@ -224,6 +226,7 @@ function mergeConfigs(global: SandboxConfig | null, project: SandboxConfig | nul
 
     return {
         sandbox: {
+            enabled: project.sandbox.enabled ?? base.sandbox.enabled,
             mounts: mergeRecordsOrDefault(base.sandbox.mounts, project.sandbox.mounts, {}),
             env: mergeRecords(base.sandbox.env, project.sandbox.env),
             inheritEnv: mergeRecords(base.sandbox.inheritEnv, project.sandbox.inheritEnv),

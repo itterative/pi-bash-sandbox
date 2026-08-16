@@ -377,6 +377,88 @@ describe("config merging", () => {
         });
     });
 
+    describe("sandbox.enabled", () => {
+        it("should default to undefined (enabled) when not set", () => {
+            writeGlobalConfig({
+                sandbox: { mounts: {} },
+                permissions: {},
+            });
+
+            const originalGlobal = process.env.SANDBOX_CONFIG_PATH_GLOBAL;
+            process.env.SANDBOX_CONFIG_PATH_GLOBAL = globalConfigPath;
+
+            const emptyDir = path.join(tempDir, "empty-project");
+            fs.mkdirSync(emptyDir);
+
+            try {
+                clearConfigCache();
+                const loaded = config.load(emptyDir);
+
+                expect(loaded.sandbox.enabled).toBeUndefined();
+            } finally {
+                process.env.SANDBOX_CONFIG_PATH_GLOBAL = originalGlobal;
+            }
+        });
+
+        it("should parse enabled: false from project config", () => {
+            writeProjectConfig({
+                sandbox: { enabled: false, mounts: {} },
+                permissions: {},
+            });
+
+            clearConfigCache();
+            const loaded = config.load(projectDir);
+
+            expect(loaded.sandbox.enabled).toBe(false);
+        });
+
+        it("should let project override global enabled value", () => {
+            writeGlobalConfig({
+                sandbox: { enabled: false, mounts: {} },
+                permissions: {},
+            });
+            writeProjectConfig({
+                sandbox: { enabled: true, mounts: {} },
+                permissions: {},
+            });
+
+            const originalGlobal = process.env.SANDBOX_CONFIG_PATH_GLOBAL;
+            process.env.SANDBOX_CONFIG_PATH_GLOBAL = globalConfigPath;
+
+            try {
+                clearConfigCache();
+                const loaded = config.load(projectDir);
+
+                expect(loaded.sandbox.enabled).toBe(true);
+            } finally {
+                process.env.SANDBOX_CONFIG_PATH_GLOBAL = originalGlobal;
+            }
+        });
+
+        it("should inherit global enabled: false when project does not set it", () => {
+            writeGlobalConfig({
+                sandbox: { enabled: false, mounts: {} },
+                permissions: {},
+            });
+            writeProjectConfig({
+                sandbox: { mounts: {} },
+                permissions: {},
+            });
+
+            const originalGlobal = process.env.SANDBOX_CONFIG_PATH_GLOBAL;
+            process.env.SANDBOX_CONFIG_PATH_GLOBAL = globalConfigPath;
+
+            try {
+                clearConfigCache();
+                const loaded = config.load(projectDir);
+
+                expect(loaded.sandbox.enabled).toBe(false);
+            } finally {
+                process.env.SANDBOX_CONFIG_PATH_GLOBAL = originalGlobal;
+            }
+        });
+    });
+
     describe("heuristics merging", () => {
         it("should merge cwdConfinement fields with project precedence and concat denyPaths", () => {
             writeGlobalConfig({

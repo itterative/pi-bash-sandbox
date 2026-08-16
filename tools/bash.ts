@@ -6,7 +6,7 @@ import type {
     BashToolInput,
 } from "@earendil-works/pi-coding-agent";
 
-import sandboxConfig from "../common/config";
+import sandboxConfig, { type SandboxConfig } from "../common/config";
 import { ALLOWED_COMMAND_ENTRY_TYPE, type AllowedCommandEntry } from "../common/audit";
 import sandbox from "../sandbox/bubblewrap";
 import { Permission } from "../sandbox/permissions";
@@ -35,6 +35,32 @@ export default function registerBashToolHook(pi: ExtensionAPI) {
             return;
         }
 
+        // Load config first so we know whether sandboxing is enabled at all
+        let config: SandboxConfig | null = null;
+        try {
+            config = sandboxConfig.load(ctx.cwd);
+        } catch {
+            // no config file found; defaults apply
+        }
+
+        if (config !== null) {
+          ctx.ui.notify(
+              `pi-bash-sandbox: loaded config has ${Object.entries(config.sandbox.mounts).length} mount(s) and ${Object.entries(config.permissions).length} permission(s).\n`,
+              "info",
+          );
+        }
+
+        const sandboxEnabled = config?.sandbox.enabled !== false;
+
+        if (!sandboxEnabled) {
+            ctx.ui.notify(
+                "pi-bash-sandbox: sandboxing disabled by config (sandbox.enabled = false); \"allow:sandbox\" commands will run unsandboxed\n",
+                "info",
+            );
+
+            return;
+        }
+
         bwrap = (await lookpath("bwrap")) ?? "";
 
         if (bwrap.length === 0) {
@@ -46,15 +72,6 @@ export default function registerBashToolHook(pi: ExtensionAPI) {
             );
 
             return;
-        }
-
-        const config = sandboxConfig.load(ctx.cwd);
-
-        if (config !== null) {
-          ctx.ui.notify(
-              `pi-bash-sandbox: loaded config has ${Object.entries(config.sandbox.mounts).length} mount(s) and ${Object.entries(config.permissions).length} permission(s).\n`,
-              "info",
-          );
         }
     });
 
@@ -104,6 +121,13 @@ Pay attention to these notes as they provide context about the user's preference
             return { block: false };
         }
 
+        // Master switch from config (sandbox.enabled), read at call time so
+        // "/bash-sandbox-config reload" takes effect immediately. When false,
+        // the extension behaves as if bubblewrap were unavailable: no
+        // "Yes (sandbox)" prompt option and "allow:sandbox" degrades to
+        // plain "allow".
+        const sandboxEnabled = sandboxConfig.current?.sandbox.enabled !== false;
+
         let permission: Permission = "ask";
         try {
             permission = resolvePermission(
@@ -115,7 +139,7 @@ Pay attention to these notes as they provide context about the user's preference
         }
 
         if (permission === "ask") {
-            const items: SelectMessageItem<Permission>[] = hasSupport
+            const items: SelectMessageItem<Permission>[] = hasSupport && sandboxEnabled
                 ? [
                     { value: "allow:sandbox", label: "Yes (sandbox)", placeholder: "e.g., trusted build tool" },
                     { value: "allow", label: "Yes", placeholder: "e.g., I've reviewed this command" },
@@ -144,6 +168,12 @@ Pay attention to these notes as they provide context about the user's preference
             } else {
                 permission = "deny";
             }
+        }
+
+        // Sandboxing disabled by config: "allow:sandbox" degrades to plain
+        // "allow" (runs unsandboxed), as if bubblewrap were unavailable.
+        if (permission === "allow:sandbox" && !sandboxEnabled) {
+            permission = "allow";
         }
 
         let blocked: boolean = true;

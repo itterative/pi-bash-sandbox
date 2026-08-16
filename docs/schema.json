@@ -13,6 +13,11 @@
       "type": "object",
       "description": "Sandbox configuration",
       "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Master switch for bubblewrap sandboxing. When false, the extension behaves as if bubblewrap were unavailable: the \"Yes (sandbox)" prompt option is hidden and \"allow:sandbox\" permissions run unsandboxed (like \"allow\"). Permission rules and prompts still apply (default: true)",
+          "default": true
+        },
         "mounts": {
           "type": "object",
           "description": "Additional filesystem paths to bind into the sandbox (additive to default mounts)",

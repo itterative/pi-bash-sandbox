@@ -55,6 +55,24 @@ For IDE autocomplete and validation, add a `$schema` field to your config:
 
 ## Configuration Fields
 
+### `sandbox.enabled` (optional)
+
+Master switch for bubblewrap sandboxing (default: `true`).
+
+Set to `false` in a project's `.pi/bash-sandbox-config.json` to disable sandboxing for that repo. The extension then behaves as if bubblewrap were not installed:
+
+- The **"Yes (sandbox)"** option is hidden from permission prompts (only **Yes** / **No** remain)
+- Commands resolving to `"allow:sandbox"` (via permission patterns or the cwd-confinement heuristic) run **unsandboxed**, as if they were `"allow"`
+- Permission rules, prompts, and auditing otherwise work unchanged
+
+```json
+{
+    "sandbox": {
+        "enabled": false
+    }
+}
+```
+
 ### `sandbox.mounts` (optional)
 
 - Additional filesystem paths to bind into the sandbox (these are **additive** to the default mounts)

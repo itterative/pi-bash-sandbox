@@ -42,6 +42,8 @@ Configuration is stored in JSON files:
 
 By default, commands that don't match any permission pattern will prompt you (`ask`). Set `"**"` to change the default — see [Default Permission](./docs/permissions.md#default-permission).
 
+To disable bubblewrap sandboxing entirely for a repo, set `"sandbox": { "enabled": false }` in its project config — `"allow:sandbox"` commands then run unsandboxed and the "Yes (sandbox)" prompt option is hidden (see [Configuration](./docs/configuration.md#sandboxenabled-optional)).
+
 ### Quick Example
 
 ```json
