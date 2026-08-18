@@ -15,12 +15,14 @@
     "@earendil-works/pi-coding-agent": "^0.75.5",
     "@earendil-works/pi-tui": "^0.75.5",
     "@types/node": "^25.3.3",
+    "tsx": "^4.23.12",
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"
   },
   "scripts": {
     "test": "vitest",
     "test:run": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "audit:curation": "tsx tools/curation-audit.ts"
   }
 }
