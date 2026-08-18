@@ -25,6 +25,7 @@ Note: `parseBash` keeps chain operators as args — whole-line patterns must inc
 - Subshells/process substitutions (including redirection targets) recurse through `isConfined`.
 - `/dev/null` etc. are allowlisted as special paths (sandbox devtmpfs).
 - Config: `heuristics.cwdConfinement` = `{ enabled (default true), permission (default "allow:sandbox"), commands (allowlist over registry), denyPaths (extra sensitive segment globs), blockDotfiles (paranoid mode), resolveSymlinks (default true) }`; merged field-wise in `common/config.ts` (denyPaths concatenated + deduped).
+- Registry curation principle: commands that can EXECUTE code are never added (awk `system()`, sed `e` command, node/python, env-with-command) — those belong in explicit allow rules, which are the deliberate opt-in that dominates the heuristic. unsafeFlags also covers value-taking flags (e.g. `tar -I prog`, `sort --compress-program`). Two-value flags whose second value is a file (jq `--slurpfile name file`) are unsafeFlags, because the single-value model would leave the file unchecked (it would land in the first-pattern slot). Long valueFlags with separate values do NOT skip the value token (only short-cluster/inline forms do) — the value is positionally path-checked, which is conservative and fine for numeric/relative values.
 
 ## Symlink hardening (resolveSymlinks)
 

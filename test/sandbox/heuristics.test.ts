@@ -122,6 +122,124 @@ describe("getCwdConfinementPermission", () => {
         ]);
     });
 
+    describe("ripgrep", () => {
+        runTests([
+            { desc: "pattern + file", command: "rg foo src/index.ts", expected: "allow:sandbox" },
+            { desc: "type and glob flags", command: "rg -t ts -g '*.test.ts' foo .", expected: "allow:sandbox" },
+            { desc: "-e makes all positionals paths (escape)", command: "rg -e foo /etc/passwd", expected: undefined },
+            { desc: "-e with contained paths", command: "rg -e foo a.txt b.txt", expected: "allow:sandbox" },
+            { desc: "-f pattern file inside cwd", command: "rg -f patterns.txt src", expected: "allow:sandbox" },
+            { desc: "-f pattern file outside cwd", command: "rg -f /etc/patterns src", expected: undefined },
+            { desc: "inline value flags", command: "rg --max-depth=2 --max-columns=100 foo .", expected: "allow:sandbox" },
+            { desc: "--pre runs a program: falls back", command: "rg --pre zstdcat foo .", expected: undefined },
+            { desc: "--follow descends into symlinks: falls back", command: "rg --follow foo .", expected: undefined },
+        ]);
+    });
+
+    describe("fd", () => {
+        runTests([
+            { desc: "pattern only (searches cwd)", command: "fd foo", expected: "allow:sandbox" },
+            { desc: "pattern + path", command: "fd index src", expected: "allow:sandbox" },
+            { desc: "value flags", command: "fd -e ts -t f foo", expected: "allow:sandbox" },
+            { desc: "path outside cwd", command: "fd foo /etc", expected: undefined },
+            { desc: "-x runs a command on results: falls back", command: "fd -x wc {}", expected: undefined },
+            { desc: "--exec-batch is unsafe", command: "fd --exec-batch wc {}", expected: undefined },
+            { desc: "-L descends into symlinks: falls back", command: "fd -L foo", expected: undefined },
+            { desc: "fdfind alias", command: "fdfind foo", expected: "allow:sandbox" },
+        ]);
+    });
+
+    describe("file comparison", () => {
+        runTests([
+            { desc: "diff two files", command: "diff a.txt b.txt", expected: "allow:sandbox" },
+            { desc: "diff -U with value", command: "diff -U 3 a.txt b.txt", expected: "allow:sandbox" },
+            { desc: "diff -r dirs", command: "diff -r src dist", expected: "allow:sandbox" },
+            { desc: "diff path outside cwd", command: "diff a.txt /etc/passwd", expected: undefined },
+            { desc: "diff -X exclude-from file", command: "diff -X excludes.txt -r src dist", expected: "allow:sandbox" },
+            { desc: "diff3", command: "diff3 a.txt b.txt c.txt", expected: "allow:sandbox" },
+            { desc: "cmp", command: "cmp a.txt b.txt", expected: "allow:sandbox" },
+            { desc: "cmp -n bytes flag", command: "cmp -n 100 a.txt b.txt", expected: "allow:sandbox" },
+        ]);
+    });
+
+    describe("checksums", () => {
+        runTests([
+            { desc: "sha256sum file", command: "sha256sum file.txt", expected: "allow:sandbox" },
+            { desc: "md5sum check mode", command: "md5sum -c sums.txt", expected: "allow:sandbox" },
+            { desc: "cksum multiple files", command: "cksum a.txt b.txt", expected: "allow:sandbox" },
+            { desc: "sha256sum outside cwd", command: "sha256sum /etc/passwd", expected: undefined },
+        ]);
+    });
+
+    describe("binary and compressed readers", () => {
+        runTests([
+            { desc: "base64 encode file", command: "base64 file.txt", expected: "allow:sandbox" },
+            { desc: "base64 decode with output", command: "base64 -w 0 -d enc.b64 -o file.txt", expected: "allow:sandbox" },
+            { desc: "base64 input outside cwd", command: "base64 /etc/passwd", expected: undefined },
+            { desc: "strings with min length", command: "strings -n 8 binary.bin", expected: "allow:sandbox" },
+            { desc: "od format flags", command: "od -A d -t x1 file.bin", expected: "allow:sandbox" },
+            { desc: "od outside cwd", command: "od /etc/passwd", expected: undefined },
+            { desc: "hexdump", command: "hexdump -C file.bin", expected: "allow:sandbox" },
+            { desc: "xxd", command: "xxd -l 16 file.bin", expected: "allow:sandbox" },
+            { desc: "xxd -r writes files: falls back", command: "xxd -r out.bin in.hex", expected: undefined },
+            { desc: "xxd --post runs a program: falls back", command: "xxd --post gzip file.bin", expected: undefined },
+            { desc: "zcat", command: "zcat file.gz", expected: "allow:sandbox" },
+            { desc: "zcat outside cwd", command: "zcat /etc/passwd.gz", expected: undefined },
+            { desc: "zgrep pattern + file", command: "zgrep foo file.gz", expected: "allow:sandbox" },
+            { desc: "zgrep -e makes positionals paths (escape)", command: "zgrep -e foo /etc/passwd.gz", expected: undefined },
+        ]);
+    });
+
+    describe("archives", () => {
+        runTests([
+            { desc: "tar list archive", command: "tar -tzf archive.tar.gz", expected: "allow:sandbox" },
+            { desc: "tar list with separate -f", command: "tar -t -f archive.tar", expected: "allow:sandbox" },
+            { desc: "tar extract: falls back", command: "tar -xzf archive.tar.gz", expected: undefined },
+            { desc: "tar create: falls back", command: "tar -czf out.tar.gz src", expected: undefined },
+            { desc: "tar --to-command: falls back", command: "tar -tzf a.tar.gz --to-command wc", expected: undefined },
+            { desc: "tar archive outside cwd", command: "tar -tzf /opt/a.tar.gz", expected: undefined },
+            { desc: "zipinfo list contents", command: "zipinfo archive.zip", expected: "allow:sandbox" },
+            { desc: "zipinfo outside cwd", command: "zipinfo /opt/a.zip", expected: undefined },
+        ]);
+    });
+
+    describe("jq", () => {
+        runTests([
+            { desc: "filter + file", command: "jq '.name' data.json", expected: "allow:sandbox" },
+            { desc: "-n with no file", command: "jq -n '1 + 1'", expected: "allow:sandbox" },
+            { desc: "--arg with value", command: "jq --arg x 5 '.x' data.json", expected: "allow:sandbox" },
+            { desc: "-f program file inside cwd", command: "jq -f prog.jq data.json", expected: "allow:sandbox" },
+            { desc: "-f program file outside cwd", command: "jq -f /etc/prog.jq data.json", expected: undefined },
+            { desc: "file outside cwd", command: "jq '.name' /etc/data.json", expected: undefined },
+            { desc: "--slurpfile takes name+file: falls back", command: "jq --slurpfile x data.json '.x'", expected: undefined },
+            { desc: "-L loads modules: falls back", command: "jq -L lib '.name' data.json", expected: undefined },
+        ]);
+    });
+
+    describe("system utilities", () => {
+        runTests([
+            { desc: "date", command: "date", expected: "allow:sandbox" },
+            { desc: "date with date string", command: "date -d '2024-01-01' -u", expected: "allow:sandbox" },
+            { desc: "date reading dates from file", command: "date -f dates.txt", expected: "allow:sandbox" },
+            { desc: "date file outside cwd", command: "date -f /etc/hostname", expected: undefined },
+            { desc: "sleep", command: "sleep 100", expected: "allow:sandbox" },
+            { desc: "which", command: "which node", expected: "allow:sandbox" },
+            { desc: "whereis", command: "whereis git", expected: "allow:sandbox" },
+            { desc: "type", command: "type -t cat", expected: "allow:sandbox" },
+            { desc: "uname", command: "uname -a", expected: "allow:sandbox" },
+            { desc: "uname with positional falls back", command: "uname foo", expected: undefined },
+            { desc: "hostname", command: "hostname", expected: "allow:sandbox" },
+            { desc: "hostname -F file", command: "hostname -F hosts.txt", expected: "allow:sandbox" },
+            { desc: "hostname -F outside cwd", command: "hostname -F /etc/hosts", expected: undefined },
+            { desc: "nproc", command: "nproc", expected: "allow:sandbox" },
+            { desc: "nproc --ignore", command: "nproc --ignore=2", expected: "allow:sandbox" },
+            { desc: "free", command: "free -h", expected: "allow:sandbox" },
+            { desc: "id", command: "id -u", expected: "allow:sandbox" },
+            { desc: "df", command: "df -h .", expected: "allow:sandbox" },
+            { desc: "df outside cwd", command: "df /etc", expected: undefined },
+        ]);
+    });
+
     describe("subshells and process substitution", () => {
         runTests([
             { desc: "subshell with known command", command: "cat $(echo file.txt)", expected: "allow:sandbox" },
@@ -205,7 +323,8 @@ describe("getCwdConfinementPermission", () => {
             { desc: "trailing chain operator", command: "cat file.txt &&", expected: "allow:sandbox" },
             { desc: "only chain operators", command: "; ; ;", expected: undefined },
             { desc: "background operator", command: "cat file.txt &", expected: "allow:sandbox" },
-            { desc: "background unknown command", command: "sleep 100 &", expected: undefined },
+            { desc: "background known command", command: "sleep 100 &", expected: "allow:sandbox" },
+            { desc: "background unknown command", command: "nc host 80 &", expected: undefined },
             { desc: "second branch escapes cwd", command: "cat file.txt || cat /etc/passwd", expected: undefined },
         ]);
     });

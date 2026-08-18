@@ -65,6 +65,36 @@ export const KNOWN_COMMANDS: Record<string, CommandSpec> = {
     },
     stat: { valueFlags: ["-c", "--format", "--printf"] },
 
+    // binary and compressed readers
+    zcat: {},
+    strings: {
+        valueFlags: ["-n", "--min-length", "--minimum-length", "-t", "--radix", "--bytes"],
+    },
+    od: {
+        valueFlags: [
+            "-A", "--address-radix",
+            "-j", "--skip-bytes",
+            "-N", "--read-bytes",
+            "-S", "--seek",
+            "-t", "--format",
+        ],
+    },
+    hexdump: { valueFlags: ["-e", "--format", "-n", "--length", "-s", "--offset"] },
+    xxd: {
+        valueFlags: [
+            "-l", "--length",
+            "-s", "--offset",
+            "-c", "--cols",
+            "-g", "--group-size",
+        ],
+        // -r/-b write files; --post runs a program on the output
+        unsafeFlags: ["-r", "--revert", "-b", "--bin", "--post"],
+    },
+    base64: {
+        valueFlags: ["-w", "--wrap"],
+        pathFlags: ["-o", "--output"],
+    },
+
     // directory readers
     ls: {},
     dir: {},
@@ -80,6 +110,45 @@ export const KNOWN_COMMANDS: Record<string, CommandSpec> = {
         pathFlags: ["-o"],
         // -l follows symlinks to directories during traversal
         unsafeFlags: ["-l"],
+    },
+    // first positional is a search pattern, remaining positionals are paths
+    fd: {
+        positionals: "first-pattern",
+        valueFlags: [
+            "-d", "--max-depth",
+            "-t", "--type",
+            "-e", "--extension",
+            "--size",
+            "--owner",
+            "--changed-within",
+            "--changed-before",
+            "--changed-after",
+            "--change-newer-than",
+            "--change-older-than",
+            "--max-results",
+            "--color",
+        ],
+        // -x/-X run a command on the results; -L descends into symlinks
+        unsafeFlags: ["-x", "--exec", "-X", "--exec-batch", "-L", "--follow"],
+    },
+    // Debian/Ubuntu name for fd
+    fdfind: {
+        positionals: "first-pattern",
+        valueFlags: [
+            "-d", "--max-depth",
+            "-t", "--type",
+            "-e", "--extension",
+            "--size",
+            "--owner",
+            "--changed-within",
+            "--changed-before",
+            "--changed-after",
+            "--change-newer-than",
+            "--change-older-than",
+            "--max-results",
+            "--color",
+        ],
+        unsafeFlags: ["-x", "--exec", "-X", "--exec-batch", "-L", "--follow"],
     },
 
     // path manipulation
@@ -151,6 +220,54 @@ export const KNOWN_COMMANDS: Record<string, CommandSpec> = {
         pathFlags: ["-f", "--file", "--exclude-from"],
         unsafeFlags: ["-R", "--dereference-recursive"],
     },
+    // zgrep is a wrapper around grep on compressed files; same flag semantics
+    zgrep: {
+        positionals: "first-pattern",
+        patternBypassFlags: ["-e", "--regexp", "-f", "--file"],
+        valueFlags: [
+            "-e", "--regexp",
+            "-m", "--max-count",
+            "-A", "--after-context",
+            "-B", "--before-context",
+            "-C", "--context",
+            "--label",
+            "--include", "--exclude", "--exclude-dir",
+            "--binary-files",
+            "-D", "--directories",
+            "-d", "--devices",
+            "--group-separator",
+            "--color", "--colour",
+        ],
+        pathFlags: ["-f", "--file", "--exclude-from"],
+        unsafeFlags: ["-R", "--dereference-recursive"],
+    },
+    rg: {
+        positionals: "first-pattern",
+        patternBypassFlags: ["-e", "--regexp", "-f", "--file"],
+        valueFlags: [
+            "-e", "--regexp",
+            "-t", "--type",
+            "-g", "--glob", "--iglob",
+            "-A", "--after-context",
+            "-B", "--before-context",
+            "-C", "--context",
+            "-m", "--max-count",
+            "-M", "--max-count-per-file",
+            "--max-depth",
+            "--max-columns",
+            "--max-filesize",
+            "-j", "--threads",
+            "--engine",
+            "--sort", "--sortr",
+            "--color",
+            "--context-separator",
+            "--field-context-separator",
+            "--pre-glob",
+        ],
+        pathFlags: ["-f", "--file"],
+        // --pre runs an external program; --follow descends into symlinks
+        unsafeFlags: ["--pre", "--follow"],
+    },
     sort: {
         valueFlags: [
             "-k", "--key",
@@ -185,6 +302,74 @@ export const KNOWN_COMMANDS: Record<string, CommandSpec> = {
             "-L",
         ],
     },
+    // first positional is the jq filter, remaining positionals are input files
+    jq: {
+        positionals: "first-pattern",
+        // -f/--from-file supplies the filter, so all positionals are files
+        patternBypassFlags: ["-f", "--from-file"],
+        valueFlags: ["--arg", "--argjson", "--indent"],
+        pathFlags: ["-f", "--from-file"],
+        // -L loads jq/C modules from arbitrary directories;
+        // --slurpfile/--rawfile/--argfile take a name AND a file, which the
+        // single-value model would not path-check, so fall back instead
+        unsafeFlags: ["-L", "--library-path", "--slurpfile", "--rawfile", "--argfile"],
+    },
+
+    // file comparison
+    diff: {
+        valueFlags: [
+            "-C", "--context",
+            "-U", "--unified",
+            "--label",
+            "-I", "--ignore-matching-lines",
+            "-x", "--exclude",
+            "-S", "--starting-file",
+        ],
+        pathFlags: ["-X", "--exclude-from"],
+    },
+    diff3: {
+        valueFlags: [
+            "-C", "--context",
+            "-U", "--unified",
+            "--label",
+            "-I", "--ignore-matching-lines",
+            "-x", "--exclude",
+            "-S", "--starting-file",
+        ],
+        pathFlags: ["-X", "--exclude-from"],
+    },
+    cmp: { valueFlags: ["-i", "--ignore-initial", "-n", "--bytes"] },
+
+    // checksums (all flags are booleans; -c reads a checksums file positional)
+    cksum: {},
+    md5sum: {},
+    sha1sum: {},
+    sha224sum: {},
+    sha256sum: {},
+    sha384sum: {},
+    sha512sum: {},
+    // macOS aliases of the coreutils checksum tools
+    shasum: {},
+    md5: {},
+
+    // archives (list/inspect only; modes that write or run programs are unsafe)
+    tar: {
+        valueFlags: ["--transform", "--exclude"],
+        pathFlags: ["-f", "--file", "--exclude-file"],
+        // create/extract/modify write files; -I/--to-command/--checkpoint-action
+        // run external programs
+        unsafeFlags: [
+            "-c", "--create",
+            "-x", "--extract",
+            "-d", "--delete",
+            "-r", "--append", "-A",
+            "-u", "--update",
+            "-I", "--use-compress-program",
+            "--to-command",
+            "--checkpoint-action",
+        ],
+    },
+    zipinfo: { valueFlags: ["-T"] },
 
     // no filesystem arguments
     pwd: { positionals: "none" },
@@ -192,6 +377,25 @@ export const KNOWN_COMMANDS: Record<string, CommandSpec> = {
     false: { positionals: "none" },
     echo: { positionals: "ignore" },
     printf: { positionals: "ignore" },
+
+    // system utilities (no file access, or program names instead of paths)
+    date: {
+        valueFlags: ["-d", "--date"],
+        pathFlags: ["-f", "--file"],
+    },
+    sleep: { positionals: "ignore" },
+    which: { positionals: "ignore" },
+    whereis: { positionals: "ignore" },
+    type: { positionals: "ignore" },
+    uname: { positionals: "none" },
+    hostname: {
+        positionals: "ignore",
+        pathFlags: ["-F", "--file"],
+    },
+    nproc: { positionals: "none", valueFlags: ["--ignore"] },
+    free: { positionals: "none", valueFlags: ["-c"] },
+    id: { positionals: "none" },
+    df: { valueFlags: ["-B", "--block-size", "--output"] },
 };
 
 // pseudo-files available inside the sandbox's devtmpfs
