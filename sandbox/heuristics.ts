@@ -13,14 +13,38 @@ import {
 } from "./bash";
 
 /**
+ * Semantics of a single flag, used by the cwd-confinement heuristic to
+ * figure out which arguments may access the filesystem.
+ */
+export interface FlagSpec {
+    /**
+     * How many value tokens this flag consumes (default 0 = boolean).
+     * Values are consumed as separate arguments, or inline for one value
+     * (`--flag=value` fills slot 0). Multi-value flags in inline form are
+     * ineligible. Consumed values are data unless listed in `pathSlots`.
+     */
+    values?: number;
+    /**
+     * Indices (0-based) of the consumed value slots that are filesystem
+     * paths and must resolve inside the working directory.
+     */
+    pathSlots?: number[];
+    /**
+     * The flag makes the command ineligible for the heuristic (it writes
+     * files, executes programs, or follows symlinks).
+     */
+    unsafe?: boolean;
+}
+
+/**
  * Argument semantics for a known command, used by the cwd-confinement
  * heuristic to figure out which arguments may access the filesystem.
  *
  * Extraction is conservative: any argument that cannot be classified is
  * treated as a file path and must resolve inside the working directory.
- * Arguments are only skipped when consumed by a `valueFlag` (whose value
- * must definitely not be a path) or by the "first-pattern" positional mode
- * (e.g. grep's pattern argument).
+ * Arguments are only skipped when consumed as a flag value (unless the
+ * value's slot is a path slot) or by the "first-pattern"/"first-path"
+ * positional modes (e.g. grep's pattern argument).
  */
 export interface CommandSpec {
     /**
@@ -29,27 +53,42 @@ export interface CommandSpec {
      * - "none": the command takes no positionals; any positional is ineligible
      * - "ignore": positionals are data, not paths (e.g. echo)
      * - "first-pattern": the first positional is a pattern (e.g. grep),
-     *   unless a patternBypassFlag appears anywhere in the arguments
+     *   the rest are paths, unless a patternBypassFlag appears anywhere in
+     *   the arguments (then all positionals are paths)
+     * - "first-path": the first positional is a path, the rest are data
+     *   (e.g. archive tools: the archive, then member names)
      */
-    positionals?: "paths" | "none" | "ignore" | "first-pattern";
-    /** Flags whose value (next arg or inline) is definitely NOT a path. */
-    valueFlags?: string[];
-    /** Flags whose value (next arg or inline) IS a path. */
-    pathFlags?: string[];
-    /** Flags that make the command ineligible for the heuristic. */
-    unsafeFlags?: string[];
+    positionals?: "paths" | "none" | "ignore" | "first-pattern" | "first-path";
+    /** Flag semantics, keyed by full flag name ("-n" or "--max-count"). */
+    flags?: Record<string, FlagSpec>;
     /** For "first-pattern": flags that provide the pattern, making all positionals paths. */
     patternBypassFlags?: string[];
     /**
      * For commands that dispatch on a subcommand (e.g. git): the first
      * positional must be one of these names, otherwise the command is
      * ineligible. The remaining arguments are evaluated against the
-     * subcommand's spec. The parent spec's unsafeFlags apply before the
-     * subcommand only (after it they would collide with subcommand flags,
-     * e.g. `git log -C` means detect-copies, not change directory).
+     * subcommand's spec, which governs the flags after it; the parent spec
+     * governs the flags before it (this is what keeps `git -C dir status`
+     * unsafe while `git log -C` means detect-copies, not change directory).
      */
     subcommands?: Record<string, CommandSpec>;
+    /**
+     * When set, the command is eligible only if at least one of these flags
+     * is present: the default mode is unsafe (e.g. unzip extracts files
+     * unless given a read-only mode like -l or -p).
+     */
+    safeModeFlags?: string[];
 }
+
+// FlagSpec shorthands for the registry
+/** consumes one value (data, never a path) */
+const VALUE: FlagSpec = { values: 1 };
+/** consumes two values (data, never paths), e.g. jq --arg name value */
+const VALUE2: FlagSpec = { values: 2 };
+/** consumes one value that IS a path */
+const PATH_VALUE: FlagSpec = { values: 1, pathSlots: [0] };
+/** makes the command ineligible */
+const UNSAFE: FlagSpec = { unsafe: true };
 
 /**
  * Registry of commands known to the cwd-confinement heuristic.
@@ -61,47 +100,66 @@ export interface CommandSpec {
 export const KNOWN_COMMANDS: Record<string, CommandSpec> = {
     // file readers
     cat: {},
-    head: { valueFlags: ["-n", "-c", "--lines", "--bytes"] },
+    head: { flags: { "-n": VALUE, "-c": VALUE, "--lines": VALUE, "--bytes": VALUE } },
     tail: {
-        valueFlags: ["-n", "-c", "--lines", "--bytes", "-s", "--sleep-interval", "--pid"],
+        flags: {
+            "-n": VALUE, "-c": VALUE,
+            "--lines": VALUE, "--bytes": VALUE,
+            "-s": VALUE, "--sleep-interval": VALUE, "--pid": VALUE,
+        },
     },
     less: {},
     more: {},
-    wc: { pathFlags: ["--files0-from"] },
+    wc: { flags: { "--files0-from": PATH_VALUE } },
     file: {
-        valueFlags: ["-F", "--separator"],
-        pathFlags: ["-f", "--files-from", "-m", "--magic-file"],
+        flags: {
+            "-F": VALUE, "--separator": VALUE,
+            "-f": PATH_VALUE, "--files-from": PATH_VALUE,
+            "-m": PATH_VALUE, "--magic-file": PATH_VALUE,
+        },
     },
-    stat: { valueFlags: ["-c", "--format", "--printf"] },
+    stat: { flags: { "-c": VALUE, "--format": VALUE, "--printf": VALUE } },
 
     // binary and compressed readers
     zcat: {},
     strings: {
-        valueFlags: ["-n", "--min-length", "--minimum-length", "-t", "--radix", "--bytes"],
+        flags: {
+            "-n": VALUE, "--min-length": VALUE, "--minimum-length": VALUE,
+            "-t": VALUE, "--radix": VALUE, "--bytes": VALUE,
+        },
     },
     od: {
-        valueFlags: [
-            "-A", "--address-radix",
-            "-j", "--skip-bytes",
-            "-N", "--read-bytes",
-            "-S", "--seek",
-            "-t", "--format",
-        ],
+        flags: {
+            "-A": VALUE, "--address-radix": VALUE,
+            "-j": VALUE, "--skip-bytes": VALUE,
+            "-N": VALUE, "--read-bytes": VALUE,
+            "-S": VALUE, "--seek": VALUE,
+            "-t": VALUE, "--format": VALUE,
+        },
     },
-    hexdump: { valueFlags: ["-e", "--format", "-n", "--length", "-s", "--offset"] },
+    hexdump: {
+        flags: {
+            "-e": VALUE, "--format": VALUE,
+            "-n": VALUE, "--length": VALUE,
+            "-s": VALUE, "--offset": VALUE,
+        },
+    },
     xxd: {
-        valueFlags: [
-            "-l", "--length",
-            "-s", "--offset",
-            "-c", "--cols",
-            "-g", "--group-size",
-        ],
-        // -r/-b write files; --post runs a program on the output
-        unsafeFlags: ["-r", "--revert", "-b", "--bin", "--post"],
+        flags: {
+            "-l": VALUE, "--length": VALUE,
+            "-s": VALUE, "--offset": VALUE,
+            "-c": VALUE, "--cols": VALUE,
+            "-g": VALUE, "--group-size": VALUE,
+            // -r/-b write files; --post runs a program on the output
+            "-r": UNSAFE, "--revert": UNSAFE,
+            "-b": UNSAFE, "--bin": UNSAFE, "--post": UNSAFE,
+        },
     },
     base64: {
-        valueFlags: ["-w", "--wrap"],
-        pathFlags: ["-o", "--output"],
+        flags: {
+            "-w": VALUE, "--wrap": VALUE,
+            "-o": PATH_VALUE, "--output": PATH_VALUE,
+        },
     },
 
     // directory readers
@@ -109,61 +167,61 @@ export const KNOWN_COMMANDS: Record<string, CommandSpec> = {
     dir: {},
     vdir: {},
     du: {
-        valueFlags: ["-B", "--block-size", "-t", "--threshold", "--time-style"],
-        pathFlags: ["--files0-from"],
-        // -L follows symlinks during traversal
-        unsafeFlags: ["-L", "--dereference-all"],
+        flags: {
+            "-B": VALUE, "--block-size": VALUE,
+            "-t": VALUE, "--threshold": VALUE, "--time-style": VALUE,
+            "--files0-from": PATH_VALUE,
+            // -L follows symlinks during traversal
+            "-L": UNSAFE, "--dereference-all": UNSAFE,
+        },
     },
     tree: {
-        valueFlags: ["-L", "-P", "-I", "--filelimit", "--charset"],
-        pathFlags: ["-o"],
-        // -l follows symlinks to directories during traversal
-        unsafeFlags: ["-l"],
+        flags: {
+            "-L": VALUE, "-P": VALUE, "-I": VALUE,
+            "--filelimit": VALUE, "--charset": VALUE,
+            "-o": PATH_VALUE,
+            // -l follows symlinks to directories during traversal
+            "-l": UNSAFE,
+        },
     },
     // first positional is a search pattern, remaining positionals are paths
     fd: {
         positionals: "first-pattern",
-        valueFlags: [
-            "-d", "--max-depth",
-            "-t", "--type",
-            "-e", "--extension",
-            "--size",
-            "--owner",
-            "--changed-within",
-            "--changed-before",
-            "--changed-after",
-            "--change-newer-than",
-            "--change-older-than",
-            "--max-results",
-            "--color",
-        ],
-        // -x/-X run a command on the results; -L descends into symlinks
-        unsafeFlags: ["-x", "--exec", "-X", "--exec-batch", "-L", "--follow"],
+        flags: {
+            "-d": VALUE, "--max-depth": VALUE,
+            "-t": VALUE, "--type": VALUE,
+            "-e": VALUE, "--extension": VALUE,
+            "--size": VALUE, "--owner": VALUE,
+            "--changed-within": VALUE, "--changed-before": VALUE, "--changed-after": VALUE,
+            "--change-newer-than": VALUE, "--change-older-than": VALUE,
+            "--max-results": VALUE, "--color": VALUE,
+            // -x/-X run a command on the results; -L descends into symlinks
+            "-x": UNSAFE, "--exec": UNSAFE,
+            "-X": UNSAFE, "--exec-batch": UNSAFE,
+            "-L": UNSAFE, "--follow": UNSAFE,
+        },
     },
     // Debian/Ubuntu name for fd
     fdfind: {
         positionals: "first-pattern",
-        valueFlags: [
-            "-d", "--max-depth",
-            "-t", "--type",
-            "-e", "--extension",
-            "--size",
-            "--owner",
-            "--changed-within",
-            "--changed-before",
-            "--changed-after",
-            "--change-newer-than",
-            "--change-older-than",
-            "--max-results",
-            "--color",
-        ],
-        unsafeFlags: ["-x", "--exec", "-X", "--exec-batch", "-L", "--follow"],
+        flags: {
+            "-d": VALUE, "--max-depth": VALUE,
+            "-t": VALUE, "--type": VALUE,
+            "-e": VALUE, "--extension": VALUE,
+            "--size": VALUE, "--owner": VALUE,
+            "--changed-within": VALUE, "--changed-before": VALUE, "--changed-after": VALUE,
+            "--change-newer-than": VALUE, "--change-older-than": VALUE,
+            "--max-results": VALUE, "--color": VALUE,
+            "-x": UNSAFE, "--exec": UNSAFE,
+            "-X": UNSAFE, "--exec-batch": UNSAFE,
+            "-L": UNSAFE, "--follow": UNSAFE,
+        },
     },
 
     // path manipulation
     realpath: {},
     readlink: {},
-    basename: { valueFlags: ["-s", "--suffix"] },
+    basename: { flags: { "-s": VALUE, "--suffix": VALUE } },
     dirname: {},
     cd: {},
 
@@ -171,183 +229,204 @@ export const KNOWN_COMMANDS: Record<string, CommandSpec> = {
     grep: {
         positionals: "first-pattern",
         patternBypassFlags: ["-e", "--regexp", "-f", "--file"],
-        valueFlags: [
-            "-e", "--regexp",
-            "-m", "--max-count",
-            "-A", "--after-context",
-            "-B", "--before-context",
-            "-C", "--context",
-            "--label",
-            "--include", "--exclude", "--exclude-dir",
-            "--binary-files",
-            "-D", "--directories",
-            "-d", "--devices",
-            "--group-separator",
-            "--color", "--colour",
-        ],
-        pathFlags: ["-f", "--file", "--exclude-from"],
-        // -R follows symlinks during recursive traversal
-        unsafeFlags: ["-R", "--dereference-recursive"],
+        flags: {
+            "-e": VALUE, "--regexp": VALUE,
+            "-m": VALUE, "--max-count": VALUE,
+            "-A": VALUE, "--after-context": VALUE,
+            "-B": VALUE, "--before-context": VALUE,
+            "-C": VALUE, "--context": VALUE,
+            "--label": VALUE,
+            "--include": VALUE, "--exclude": VALUE, "--exclude-dir": VALUE,
+            "--binary-files": VALUE,
+            "-D": VALUE, "--directories": VALUE,
+            "-d": VALUE, "--devices": VALUE,
+            "--group-separator": VALUE,
+            "--color": VALUE, "--colour": VALUE,
+            "-f": PATH_VALUE, "--file": PATH_VALUE, "--exclude-from": PATH_VALUE,
+            // -R follows symlinks during recursive traversal
+            "-R": UNSAFE, "--dereference-recursive": UNSAFE,
+        },
     },
     egrep: {
         positionals: "first-pattern",
         patternBypassFlags: ["-e", "--regexp", "-f", "--file"],
-        valueFlags: [
-            "-e", "--regexp",
-            "-m", "--max-count",
-            "-A", "--after-context",
-            "-B", "--before-context",
-            "-C", "--context",
-            "--label",
-            "--include", "--exclude", "--exclude-dir",
-            "--binary-files",
-            "-D", "--directories",
-            "-d", "--devices",
-            "--group-separator",
-            "--color", "--colour",
-        ],
-        pathFlags: ["-f", "--file", "--exclude-from"],
-        unsafeFlags: ["-R", "--dereference-recursive"],
+        flags: {
+            "-e": VALUE, "--regexp": VALUE,
+            "-m": VALUE, "--max-count": VALUE,
+            "-A": VALUE, "--after-context": VALUE,
+            "-B": VALUE, "--before-context": VALUE,
+            "-C": VALUE, "--context": VALUE,
+            "--label": VALUE,
+            "--include": VALUE, "--exclude": VALUE, "--exclude-dir": VALUE,
+            "--binary-files": VALUE,
+            "-D": VALUE, "--directories": VALUE,
+            "-d": VALUE, "--devices": VALUE,
+            "--group-separator": VALUE,
+            "--color": VALUE, "--colour": VALUE,
+            "-f": PATH_VALUE, "--file": PATH_VALUE, "--exclude-from": PATH_VALUE,
+            "-R": UNSAFE, "--dereference-recursive": UNSAFE,
+        },
     },
     fgrep: {
         positionals: "first-pattern",
         patternBypassFlags: ["-e", "--regexp", "-f", "--file"],
-        valueFlags: [
-            "-e", "--regexp",
-            "-m", "--max-count",
-            "-A", "--after-context",
-            "-B", "--before-context",
-            "-C", "--context",
-            "--label",
-            "--include", "--exclude", "--exclude-dir",
-            "--binary-files",
-            "-D", "--directories",
-            "-d", "--devices",
-            "--group-separator",
-            "--color", "--colour",
-        ],
-        pathFlags: ["-f", "--file", "--exclude-from"],
-        unsafeFlags: ["-R", "--dereference-recursive"],
+        flags: {
+            "-e": VALUE, "--regexp": VALUE,
+            "-m": VALUE, "--max-count": VALUE,
+            "-A": VALUE, "--after-context": VALUE,
+            "-B": VALUE, "--before-context": VALUE,
+            "-C": VALUE, "--context": VALUE,
+            "--label": VALUE,
+            "--include": VALUE, "--exclude": VALUE, "--exclude-dir": VALUE,
+            "--binary-files": VALUE,
+            "-D": VALUE, "--directories": VALUE,
+            "-d": VALUE, "--devices": VALUE,
+            "--group-separator": VALUE,
+            "--color": VALUE, "--colour": VALUE,
+            "-f": PATH_VALUE, "--file": PATH_VALUE, "--exclude-from": PATH_VALUE,
+            "-R": UNSAFE, "--dereference-recursive": UNSAFE,
+        },
     },
     // zgrep is a wrapper around grep on compressed files; same flag semantics
     zgrep: {
         positionals: "first-pattern",
         patternBypassFlags: ["-e", "--regexp", "-f", "--file"],
-        valueFlags: [
-            "-e", "--regexp",
-            "-m", "--max-count",
-            "-A", "--after-context",
-            "-B", "--before-context",
-            "-C", "--context",
-            "--label",
-            "--include", "--exclude", "--exclude-dir",
-            "--binary-files",
-            "-D", "--directories",
-            "-d", "--devices",
-            "--group-separator",
-            "--color", "--colour",
-        ],
-        pathFlags: ["-f", "--file", "--exclude-from"],
-        unsafeFlags: ["-R", "--dereference-recursive"],
+        flags: {
+            "-e": VALUE, "--regexp": VALUE,
+            "-m": VALUE, "--max-count": VALUE,
+            "-A": VALUE, "--after-context": VALUE,
+            "-B": VALUE, "--before-context": VALUE,
+            "-C": VALUE, "--context": VALUE,
+            "--label": VALUE,
+            "--include": VALUE, "--exclude": VALUE, "--exclude-dir": VALUE,
+            "--binary-files": VALUE,
+            "-D": VALUE, "--directories": VALUE,
+            "-d": VALUE, "--devices": VALUE,
+            "--group-separator": VALUE,
+            "--color": VALUE, "--colour": VALUE,
+            "-f": PATH_VALUE, "--file": PATH_VALUE, "--exclude-from": PATH_VALUE,
+            "-R": UNSAFE, "--dereference-recursive": UNSAFE,
+        },
     },
     rg: {
         positionals: "first-pattern",
         patternBypassFlags: ["-e", "--regexp", "-f", "--file"],
-        valueFlags: [
-            "-e", "--regexp",
-            "-t", "--type",
-            "-g", "--glob", "--iglob",
-            "-A", "--after-context",
-            "-B", "--before-context",
-            "-C", "--context",
-            "-m", "--max-count",
-            "-M", "--max-count-per-file",
-            "--max-depth",
-            "--max-columns",
-            "--max-filesize",
-            "-j", "--threads",
-            "--engine",
-            "--sort", "--sortr",
-            "--color",
-            "--context-separator",
-            "--field-context-separator",
-            "--pre-glob",
-        ],
-        pathFlags: ["-f", "--file"],
-        // --pre runs an external program; --follow descends into symlinks
-        unsafeFlags: ["--pre", "--follow"],
+        flags: {
+            "-e": VALUE, "--regexp": VALUE,
+            "-t": VALUE, "--type": VALUE,
+            "-g": VALUE, "--glob": VALUE, "--iglob": VALUE,
+            "-A": VALUE, "--after-context": VALUE,
+            "-B": VALUE, "--before-context": VALUE,
+            "-C": VALUE, "--context": VALUE,
+            "-m": VALUE, "--max-count": VALUE,
+            "-M": VALUE, "--max-count-per-file": VALUE,
+            "--max-depth": VALUE,
+            "--max-columns": VALUE,
+            "--max-filesize": VALUE,
+            "-j": VALUE, "--threads": VALUE,
+            "--engine": VALUE,
+            "--sort": VALUE, "--sortr": VALUE,
+            "--color": VALUE,
+            "--context-separator": VALUE,
+            "--field-context-separator": VALUE,
+            "--pre-glob": VALUE,
+            "-f": PATH_VALUE, "--file": PATH_VALUE,
+            // --pre runs an external program; --follow descends into symlinks
+            "--pre": UNSAFE, "--follow": UNSAFE,
+        },
     },
     sort: {
-        valueFlags: [
-            "-k", "--key",
-            "-t", "--field-separator",
-            "-S", "--buffer-size",
-            "--parallel",
-            "--batch-size",
-        ],
-        pathFlags: ["-o", "--output", "-T", "--temporary-dir", "--files0-from"],
-        // executes an external program
-        unsafeFlags: ["--compress-program"],
+        flags: {
+            "-k": VALUE, "--key": VALUE,
+            "-t": VALUE, "--field-separator": VALUE,
+            "-S": VALUE, "--buffer-size": VALUE,
+            "--parallel": VALUE, "--batch-size": VALUE,
+            "-o": PATH_VALUE, "--output": PATH_VALUE,
+            "-T": PATH_VALUE, "--temporary-dir": PATH_VALUE,
+            "--files0-from": PATH_VALUE,
+            // executes an external program
+            "--compress-program": UNSAFE,
+        },
     },
     uniq: {
-        valueFlags: ["-s", "--skip-chars", "-w", "--check-chars", "-f", "--skip-fields"],
+        flags: {
+            "-s": VALUE, "--skip-chars": VALUE,
+            "-w": VALUE, "--check-chars": VALUE,
+            "-f": VALUE, "--skip-fields": VALUE,
+        },
     },
     cut: {
-        valueFlags: ["-d", "--delimiter", "-f", "--fields", "-c", "--characters", "-b", "--bytes"],
+        flags: {
+            "-d": VALUE, "--delimiter": VALUE,
+            "-f": VALUE, "--fields": VALUE,
+            "-c": VALUE, "--characters": VALUE,
+            "-b": VALUE, "--bytes": VALUE,
+        },
     },
-    paste: { valueFlags: ["-d", "--delimiters"] },
+    paste: { flags: { "-d": VALUE, "--delimiters": VALUE } },
     comm: {},
-    join: { valueFlags: ["-t", "-e", "-1", "-2", "-j", "-o", "-a", "-v"] },
+    join: {
+        flags: {
+            "-t": VALUE, "-e": VALUE, "-1": VALUE, "-2": VALUE,
+            "-j": VALUE, "-o": VALUE, "-a": VALUE, "-v": VALUE,
+        },
+    },
     tr: { positionals: "ignore" },
 
     find: {
         // flags that write files or execute commands
-        unsafeFlags: [
-            "-delete",
-            "-exec", "-execdir",
-            "-ok", "-okdir",
-            "-fls", "-fprint", "-fprint0", "-fprintf",
+        flags: {
+            "-delete": UNSAFE,
+            "-exec": UNSAFE, "-execdir": UNSAFE,
+            "-ok": UNSAFE, "-okdir": UNSAFE,
+            "-fls": UNSAFE, "-fprint": UNSAFE, "-fprint0": UNSAFE, "-fprintf": UNSAFE,
             // follows symlinks during traversal
-            "-L",
-        ],
+            "-L": UNSAFE,
+        },
     },
     // first positional is the jq filter, remaining positionals are input files
     jq: {
         positionals: "first-pattern",
         // -f/--from-file supplies the filter, so all positionals are files
         patternBypassFlags: ["-f", "--from-file"],
-        valueFlags: ["--arg", "--argjson", "--indent"],
-        pathFlags: ["-f", "--from-file"],
-        // -L loads jq/C modules from arbitrary directories;
-        // --slurpfile/--rawfile/--argfile take a name AND a file, which the
-        // single-value model would not path-check, so fall back instead
-        unsafeFlags: ["-L", "--library-path", "--slurpfile", "--rawfile", "--argfile"],
+        flags: {
+            // name + value, neither is a path
+            "--arg": VALUE2, "--argjson": VALUE2,
+            "--indent": VALUE,
+            "-f": PATH_VALUE, "--from-file": PATH_VALUE,
+            // -L/--library-path: module search dir, path-checked like -f
+            "-L": PATH_VALUE, "--library-path": PATH_VALUE,
+            // name + FILE: the file slot is path-checked
+            "--slurpfile": { values: 2, pathSlots: [1] },
+            "--rawfile": { values: 2, pathSlots: [1] },
+            "--argfile": { values: 2, pathSlots: [1] },
+        },
     },
 
     // file comparison
     diff: {
-        valueFlags: [
-            "-C", "--context",
-            "-U", "--unified",
-            "--label",
-            "-I", "--ignore-matching-lines",
-            "-x", "--exclude",
-            "-S", "--starting-file",
-        ],
-        pathFlags: ["-X", "--exclude-from"],
+        flags: {
+            "-C": VALUE, "--context": VALUE,
+            "-U": VALUE, "--unified": VALUE,
+            "--label": VALUE,
+            "-I": VALUE, "--ignore-matching-lines": VALUE,
+            "-x": VALUE, "--exclude": VALUE,
+            "-S": VALUE, "--starting-file": VALUE,
+            "-X": PATH_VALUE, "--exclude-from": PATH_VALUE,
+        },
     },
     diff3: {
-        valueFlags: [
-            "-C", "--context",
-            "-U", "--unified",
-            "--label",
-            "-I", "--ignore-matching-lines",
-            "-x", "--exclude",
-            "-S", "--starting-file",
-        ],
-        pathFlags: ["-X", "--exclude-from"],
+        flags: {
+            "-C": VALUE, "--context": VALUE,
+            "-U": VALUE, "--unified": VALUE,
+            "--label": VALUE,
+            "-I": VALUE, "--ignore-matching-lines": VALUE,
+            "-x": VALUE, "--exclude": VALUE,
+            "-S": VALUE, "--starting-file": VALUE,
+            "-X": PATH_VALUE, "--exclude-from": PATH_VALUE,
+        },
     },
-    cmp: { valueFlags: ["-i", "--ignore-initial", "-n", "--bytes"] },
+    cmp: { flags: { "-i": VALUE, "--ignore-initial": VALUE, "-n": VALUE, "--bytes": VALUE } },
 
     // checksums (all flags are booleans; -c reads a checksums file positional)
     cksum: {},
@@ -361,24 +440,34 @@ export const KNOWN_COMMANDS: Record<string, CommandSpec> = {
     shasum: {},
     md5: {},
 
-    // archives (list/inspect only; modes that write or run programs are unsafe)
+    // archives (list/inspect only; modes that write or run programs are
+    // unsafe). First positional is the archive, the rest are member names
+    // (data, not paths).
     tar: {
-        valueFlags: ["--transform", "--exclude"],
-        pathFlags: ["-f", "--file", "--exclude-file"],
-        // create/extract/modify write files; -I/--to-command/--checkpoint-action
-        // run external programs
-        unsafeFlags: [
-            "-c", "--create",
-            "-x", "--extract",
-            "-d", "--delete",
-            "-r", "--append", "-A",
-            "-u", "--update",
-            "-I", "--use-compress-program",
-            "--to-command",
-            "--checkpoint-action",
-        ],
+        positionals: "first-path",
+        flags: {
+            "--transform": VALUE, "--exclude": VALUE,
+            "-f": PATH_VALUE, "--file": PATH_VALUE, "--exclude-file": PATH_VALUE,
+            // create/extract/modify write files; -I/--to-command/
+            // --checkpoint-action run external programs
+            "-c": UNSAFE, "--create": UNSAFE,
+            "-x": UNSAFE, "--extract": UNSAFE,
+            "-d": UNSAFE, "--delete": UNSAFE,
+            "-r": UNSAFE, "--append": UNSAFE, "-A": UNSAFE,
+            "-u": UNSAFE, "--update": UNSAFE,
+            "-I": UNSAFE, "--use-compress-program": UNSAFE,
+            "--to-command": UNSAFE,
+            "--checkpoint-action": UNSAFE,
+        },
     },
-    zipinfo: { valueFlags: ["-T"] },
+    zipinfo: { flags: { "-T": VALUE } },
+    // the default mode extracts files (writes); only read-only modes are
+    // eligible. First positional is the archive, the rest are member names.
+    unzip: {
+        positionals: "first-path",
+        safeModeFlags: ["-l", "--list", "-p", "-z", "-t", "-v"],
+        flags: { "-T": VALUE },
+    },
 
     // version control (read-only inspection of the repo in cwd).
     // Excluded subcommands: diff/show/cat-file print file CONTENTS from the
@@ -393,53 +482,62 @@ export const KNOWN_COMMANDS: Record<string, CommandSpec> = {
         // programs (diff.external, core.sshCommand, gpg.program, ...),
         // -C/--git-dir/--work-tree relocate the repo, --exec-path changes
         // which helpers git runs
-        unsafeFlags: ["-c", "-C", "--git-dir", "--work-tree", "--exec-path"],
+        flags: {
+            "-c": UNSAFE, "-C": UNSAFE,
+            "--git-dir": UNSAFE, "--work-tree": UNSAFE, "--exec-path": UNSAFE,
+        },
         subcommands: {
             // positionals are pathspecs
             status: {},
             log: {
-                valueFlags: [
-                    "-n", "--max-count",
-                    "--since", "--until", "--after", "--before",
-                    "--author", "--grep",
-                    "-S", "-G",
-                    "--format", "--pretty",
-                    "--diff-filter",
-                ],
-                // patch output prints file contents from history
-                unsafeFlags: ["-p", "--patch", "-U", "--unified"],
+                flags: {
+                    "-n": VALUE, "--max-count": VALUE,
+                    "--since": VALUE, "--until": VALUE, "--after": VALUE, "--before": VALUE,
+                    "--author": VALUE, "--grep": VALUE,
+                    "-S": VALUE, "-G": VALUE,
+                    "--format": VALUE, "--pretty": VALUE,
+                    "--diff-filter": VALUE,
+                    // patch output prints file contents from history
+                    "-p": UNSAFE, "--patch": UNSAFE, "-U": UNSAFE, "--unified": UNSAFE,
+                },
             },
             "ls-files": {
-                valueFlags: ["--exclude", "--with-tree"],
+                flags: { "--exclude": VALUE, "--with-tree": VALUE },
             },
             describe: {
-                valueFlags: ["--abbrev", "--candidates", "--matches", "--exclude"],
+                flags: {
+                    "--abbrev": VALUE, "--candidates": VALUE,
+                    "--matches": VALUE, "--exclude": VALUE,
+                },
             },
             // positionals are revisions, not paths
             "rev-parse": {
                 positionals: "ignore",
-                valueFlags: ["--short", "--abbrev", "--abbrev-ref", "--git-path", "--verify"],
+                flags: {
+                    "--short": VALUE, "--abbrev": VALUE, "--abbrev-ref": VALUE,
+                    "--git-path": VALUE, "--verify": VALUE,
+                },
             },
             shortlog: {
-                valueFlags: [
-                    "-n", "--max-count",
-                    "--since", "--until", "--after", "--before",
-                    "--author", "--grep",
-                    "--format", "--pretty",
-                ],
-                unsafeFlags: ["-p", "--patch"],
+                flags: {
+                    "-n": VALUE, "--max-count": VALUE,
+                    "--since": VALUE, "--until": VALUE, "--after": VALUE, "--before": VALUE,
+                    "--author": VALUE, "--grep": VALUE,
+                    "--format": VALUE, "--pretty": VALUE,
+                    "-p": UNSAFE, "--patch": UNSAFE,
+                },
             },
             // alias of log
             whatchanged: {
-                valueFlags: [
-                    "-n", "--max-count",
-                    "--since", "--until", "--after", "--before",
-                    "--author", "--grep",
-                    "-S", "-G",
-                    "--format", "--pretty",
-                    "--diff-filter",
-                ],
-                unsafeFlags: ["-p", "--patch", "-U", "--unified"],
+                flags: {
+                    "-n": VALUE, "--max-count": VALUE,
+                    "--since": VALUE, "--until": VALUE, "--after": VALUE, "--before": VALUE,
+                    "--author": VALUE, "--grep": VALUE,
+                    "-S": VALUE, "-G": VALUE,
+                    "--format": VALUE, "--pretty": VALUE,
+                    "--diff-filter": VALUE,
+                    "-p": UNSAFE, "--patch": UNSAFE, "-U": UNSAFE, "--unified": UNSAFE,
+                },
             },
             // list mode only: a ref name as positional means create/delete
             branch: { positionals: "none" },
@@ -456,8 +554,10 @@ export const KNOWN_COMMANDS: Record<string, CommandSpec> = {
 
     // system utilities (no file access, or program names instead of paths)
     date: {
-        valueFlags: ["-d", "--date"],
-        pathFlags: ["-f", "--file"],
+        flags: {
+            "-d": VALUE, "--date": VALUE,
+            "-f": PATH_VALUE, "--file": PATH_VALUE,
+        },
     },
     sleep: { positionals: "ignore" },
     which: { positionals: "ignore" },
@@ -466,12 +566,12 @@ export const KNOWN_COMMANDS: Record<string, CommandSpec> = {
     uname: { positionals: "none" },
     hostname: {
         positionals: "ignore",
-        pathFlags: ["-F", "--file"],
+        flags: { "-F": PATH_VALUE, "--file": PATH_VALUE },
     },
-    nproc: { positionals: "none", valueFlags: ["--ignore"] },
-    free: { positionals: "none", valueFlags: ["-c"] },
+    nproc: { positionals: "none", flags: { "--ignore": VALUE } },
+    free: { positionals: "none", flags: { "-c": VALUE } },
     id: { positionals: "none" },
-    df: { valueFlags: ["-B", "--block-size", "--output"] },
+    df: { flags: { "-B": VALUE, "--block-size": VALUE, "--output": VALUE } },
 };
 
 // pseudo-files available inside the sandbox's devtmpfs
@@ -708,6 +808,39 @@ function hasPatternBypass(args: string[], spec: CommandSpec): boolean {
 }
 
 /**
+ * Whether any argument provides one of the spec's safeModeFlags
+ * (e.g. unzip -l, unzip --list).
+ */
+function hasSafeModeFlag(args: string[], spec: CommandSpec): boolean {
+    const safe = spec.safeModeFlags ?? [];
+    const shortSafe = safe
+        .filter((f) => !f.startsWith("--"))
+        .map((f) => f[1]);
+    const longSafe = safe.filter((f) => f.startsWith("--"));
+
+    for (let i = 1; i < args.length; i++) {
+        const arg = args[i];
+
+        if (arg === "--") {
+            break;
+        }
+
+        if (arg.startsWith("--")) {
+            if (longSafe.includes(arg.split("=", 1)[0])) {
+                return true;
+            }
+        } else if (arg.length > 1 && arg.startsWith("-")) {
+            const cluster = arg.slice(1);
+            if (shortSafe.some((c) => cluster.includes(c))) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+/**
  * Handle a short-flag cluster (e.g. -la, -n5, -efoo).
  * Returns the new argument index, or null if the command is ineligible.
  */
@@ -721,33 +854,43 @@ function handleShortCluster(
 
     for (let j = 0; j < cluster.length; j++) {
         const flag = "-" + cluster[j];
+        const flagSpec = spec.flags?.[flag];
 
-        if (spec.unsafeFlags?.includes(flag)) {
+        if (flagSpec?.unsafe) {
             return null;
         }
 
-        if (spec.valueFlags?.includes(flag)) {
+        const values = flagSpec?.values ?? 0;
+        if (values > 0) {
+            if (values > 1) {
+                // multi-value short flag: cannot be classified safely
+                return null;
+            }
             // inline value is the rest of the cluster, otherwise next arg
-            return j === cluster.length - 1 ? index + 1 : index;
-        }
-
-        if (spec.pathFlags?.includes(flag)) {
             if (j === cluster.length - 1) {
                 const value = args[index + 1];
                 if (value === undefined) {
                     return null;
                 }
-                paths.push(value);
+                if (hasPathSlot(flagSpec, 0)) {
+                    paths.push(value);
+                }
                 return index + 1;
             }
-            paths.push(cluster.slice(j + 1));
+            if (hasPathSlot(flagSpec, 0)) {
+                paths.push(cluster.slice(j + 1));
+            }
             return index;
         }
 
-        // unknown short flag: assume boolean, continue with the cluster
+        // boolean (known or unknown): continue with the cluster
     }
 
     return index;
+}
+
+function hasPathSlot(flagSpec: FlagSpec | undefined, slot: number): boolean {
+    return flagSpec?.pathSlots?.includes(slot) ?? false;
 }
 
 /**
@@ -767,7 +910,7 @@ function extractCommandPaths(
 
     // Commands with subcommands (e.g. git) dispatch on the first positional:
     // it must name a known subcommand, after which the subcommand's spec
-    // governs the remaining arguments. The parent's unsafeFlags apply before
+    // governs the remaining arguments. The parent's unsafe flags apply before
     // dispatch only (after it they would collide with subcommand flags,
     // e.g. `git log -C` means detect-copies, not change directory).
     const subcommands = spec.subcommands;
@@ -826,25 +969,35 @@ function extractCommandPaths(
                 const eq = arg.indexOf("=");
                 const name = eq === -1 ? arg : arg.slice(0, eq);
                 const inline = eq === -1 ? undefined : arg.slice(eq + 1);
+                const flagSpec = activeSpec.flags?.[name];
 
-                if (!dispatched && spec.unsafeFlags?.includes(name)) {
+                if (flagSpec?.unsafe) {
                     return null;
                 }
 
-                if (activeSpec.unsafeFlags?.includes(name)) {
-                    return null;
-                }
-
-                if (activeSpec.valueFlags?.includes(name)) {
-                    continue;
-                }
-
-                if (activeSpec.pathFlags?.includes(name)) {
-                    const value = inline ?? args[++i];
-                    if (value === undefined) {
-                        return null;
+                const values = flagSpec?.values ?? 0;
+                if (values > 0) {
+                    if (inline !== undefined) {
+                        // inline value fills slot 0; multi-value flags do
+                        // not have a usable inline form
+                        if (values > 1) {
+                            return null;
+                        }
+                        if (hasPathSlot(flagSpec, 0)) {
+                            paths.push(inline);
+                        }
+                        continue;
                     }
-                    paths.push(value);
+                    for (let slot = 0; slot < values; slot++) {
+                        const value = args[i + 1 + slot];
+                        if (value === undefined) {
+                            return null;
+                        }
+                        if (hasPathSlot(flagSpec, slot)) {
+                            paths.push(value);
+                        }
+                    }
+                    i += values;
                     continue;
                 }
 
@@ -856,12 +1009,10 @@ function extractCommandPaths(
             }
 
             if (arg.length > 1 && arg.startsWith("-")) {
-                // whole-arg unsafe flags (e.g. find -delete, find -exec)
-                if (!dispatched && spec.unsafeFlags?.includes(arg)) {
-                    return null;
-                }
-
-                if (activeSpec.unsafeFlags?.includes(arg)) {
+                // whole-arg unsafe flags: find's expression actions are
+                // single-dash multi-character tokens, not short clusters
+                // (-delete, -exec, -fprint, ...)
+                if (activeSpec.flags?.[arg]?.unsafe) {
                     return null;
                 }
 
@@ -897,6 +1048,12 @@ function extractCommandPaths(
                 }
                 paths.push(arg);
                 continue;
+            case "first-path":
+                if (!positionalSeen) {
+                    positionalSeen = true;
+                    paths.push(arg);
+                }
+                continue;
             default:
                 paths.push(arg);
         }
@@ -904,6 +1061,11 @@ function extractCommandPaths(
 
     // a subcommand-taking command with no subcommand (e.g. bare `git`)
     if (!dispatched) {
+        return null;
+    }
+
+    // default mode is unsafe unless a read-only mode flag is present
+    if (activeSpec.safeModeFlags && !hasSafeModeFlag(args, activeSpec)) {
         return null;
     }
 

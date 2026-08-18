@@ -211,8 +211,11 @@ describe("getCwdConfinementPermission", () => {
             { desc: "-f program file inside cwd", command: "jq -f prog.jq data.json", expected: "allow:sandbox" },
             { desc: "-f program file outside cwd", command: "jq -f /etc/prog.jq data.json", expected: undefined },
             { desc: "file outside cwd", command: "jq '.name' /etc/data.json", expected: undefined },
-            { desc: "--slurpfile takes name+file: falls back", command: "jq --slurpfile x data.json '.x'", expected: undefined },
-            { desc: "-L loads modules: falls back", command: "jq -L lib '.name' data.json", expected: undefined },
+            { desc: "--slurpfile name+file, file slot path-checked", command: "jq --slurpfile x data.json '.x'", expected: "allow:sandbox" },
+            { desc: "--slurpfile file slot outside cwd", command: "jq --slurpfile x /etc/data.json '.x'", expected: undefined },
+            { desc: "--rawfile file slot outside cwd", command: "jq --rawfile x /etc/data.json '.x'", expected: undefined },
+            { desc: "-L module dir inside cwd", command: "jq -L lib '.name' data.json", expected: "allow:sandbox" },
+            { desc: "-L module dir outside cwd", command: "jq -L /etc/jq '.name' data.json", expected: undefined },
         ]);
     });
 
@@ -278,6 +281,31 @@ describe("getCwdConfinementPermission", () => {
             { desc: "global --git-dir before subcommand: falls back", command: "git --git-dir /x log", expected: undefined },
             { desc: "bare git without subcommand: falls back", command: "git", expected: undefined },
             { desc: "git -- status", command: "git -- status", expected: "allow:sandbox" },
+        ]);
+    });
+
+    describe("flag value model", () => {
+        runTests([
+            { desc: "long value flag with separate value is consumed", command: "head --lines 5 file.txt", expected: "allow:sandbox" },
+            { desc: "long value flags consumed (grep)", command: "grep --max-count 3 --context 2 foo file.txt", expected: "allow:sandbox" },
+            { desc: "two-value flag consumes both values (jq --arg)", command: "jq --arg x /etc/passwd '.x' data.json", expected: "allow:sandbox" },
+            { desc: "two-value flag with inline form is ineligible", command: "jq --arg=x 5 '.x' data.json", expected: undefined },
+            { desc: "value flag missing its value is ineligible", command: "head --lines", expected: undefined },
+            { desc: "path flag separate value inside cwd", command: "diff -X excludes.txt a.txt b.txt", expected: "allow:sandbox" },
+        ]);
+    });
+
+    describe("unzip safe modes", () => {
+        runTests([
+            { desc: "unzip -l lists contents", command: "unzip -l a.zip", expected: "allow:sandbox" },
+            { desc: "unzip --list with member names", command: "unzip --list a.zip src/index.ts", expected: "allow:sandbox" },
+            { desc: "unzip -p prints a member to stdout", command: "unzip -p a.zip README.md", expected: "allow:sandbox" },
+            { desc: "unzip -t tests integrity", command: "unzip -t a.zip", expected: "allow:sandbox" },
+            { desc: "unzip -v verbose list", command: "unzip -v a.zip", expected: "allow:sandbox" },
+            { desc: "unzip default mode (extract) falls back", command: "unzip a.zip", expected: undefined },
+            { desc: "unzip -d extract directory falls back", command: "unzip -d out a.zip", expected: undefined },
+            { desc: "unzip -l archive outside cwd", command: "unzip -l /etc/a.zip", expected: undefined },
+            { desc: "tar member names are data, not paths", command: "tar -t a.tar.gz 'src/*'", expected: "allow:sandbox" },
         ]);
     });
 
