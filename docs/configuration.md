@@ -230,6 +230,19 @@ can still *traverse into* sensitive files within the working directory.
   symlinks
 - Known commands are trusted to be the real system binaries found via `PATH`
 - The sandbox does not isolate the network namespace
+- Environment: the heuristic rejects *explicit* assignments to names that can
+  alter command behavior (`LD_*`, `PATH`, `IFS`, `CDPATH`, `BASH_ENV`, `ENV`,
+  `SHELLOPTS`, `BASHOPTS`, `PROMPT_COMMAND`, `GCONV_PATH`, `GIT_*`,
+  `RIPGREP_CONFIG_PATH`, `LESSOPEN`/`LESSCLOSE`, `XDG_CONFIG_HOME`/
+  `XDG_DATA_HOME`), but the *inherited* process environment is not checked —
+  the sandbox passes it through unless `sandbox.inheritEnv` is configured.
+  A shell-exported `GIT_DIR`/`GIT_WORK_TREE`/`GIT_CONFIG` can therefore still
+  relocate git's subcommands to different (sandbox-mounted) state, and
+  `RIPGREP_CONFIG_PATH` can inject flags into rg. Commands whose behavior is
+  dominated by such environment (`less`/`more` with `LESSOPEN`, which executes
+  a user script on file contents) are excluded from the whitelist for this
+  reason. Setting `sandbox.inheritEnv` (even `{}`) makes the sandbox clear the
+  environment first, closing this channel at the cost of losing custom env
 
 ### `sandbox.gitWorktreeSupport` (optional)
 

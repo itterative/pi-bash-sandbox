@@ -363,6 +363,15 @@ describe("getCwdConfinementPermission", () => {
             { desc: "assignment value outside cwd is path-checked", command: "FOO=/etc/passwd cat file.txt", expected: undefined },
             { desc: "assignment value in home is path-checked", command: "FOO=~/x cat file.txt", expected: undefined },
             { desc: "sensitive assignment value is rejected", command: "FOO=.env cat file.txt", expected: undefined },
+            // state-relocating names: rejected by NAME even with an in-cwd
+            // value (the value would pass the path check on its own)
+            { desc: "GIT_DIR assignment is rejected", command: "GIT_DIR=x git status", expected: undefined },
+            { desc: "GIT_CONFIG assignment is rejected", command: "GIT_CONFIG=x git log", expected: undefined },
+            { desc: "GIT_EXEC_PATH assignment is rejected", command: "GIT_EXEC_PATH=x git status", expected: undefined },
+            { desc: "RIPGREP_CONFIG_PATH assignment is rejected", command: "RIPGREP_CONFIG_PATH=x rg needle", expected: undefined },
+            { desc: "LESSOPEN assignment is rejected", command: "LESSOPEN=x cat file.txt", expected: undefined },
+            { desc: "LESSCLOSE assignment is rejected", command: "LESSCLOSE=x cat file.txt", expected: undefined },
+            { desc: "XDG_CONFIG_HOME assignment is rejected", command: "XDG_CONFIG_HOME=x git status", expected: undefined },
         ]);
     });
 

@@ -68,17 +68,32 @@ const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
 /**
  * Environment variable names that can alter how the (trusted) command itself
- * behaves — code injection or PATH shadowing — so any assignment to them
- * makes the heuristic ineligible.
+ * behaves — code injection, PATH shadowing, or relocating the command's state
+ * (repo, config, helper) — so any assignment to them makes the heuristic
+ * ineligible. NOTE: this only covers assignments on the command line; the
+ * INHERITED process environment is not checked (the sandbox passes it through
+ * unless inheritEnv is configured). E.g. a shell-exported GIT_DIR still
+ * relocates git — accepted risk, and the reason env-dominated commands
+ * (less/more with LESSOPEN) are excluded from the whitelist entirely.
  */
 const DANGEROUS_ENV_NAMES = new Set([
     "PATH", "IFS", "CDPATH",
     "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "PROMPT_COMMAND",
     "GCONV_PATH",
+    // rg config file can inject flags, including --pre (program execution)
+    "RIPGREP_CONFIG_PATH",
+    // pagers pipe file contents through a user script
+    "LESSOPEN", "LESSCLOSE",
+    // relocate tool config/state to an attacker-chosen file (git reads the
+    // XDG config; a crafted config can select programs via core.fsmonitor)
+    "XDG_CONFIG_HOME", "XDG_DATA_HOME",
 ]);
 
 function isDangerousEnvName(name: string): boolean {
-    return name.startsWith("LD_") || DANGEROUS_ENV_NAMES.has(name);
+    // GIT_* (GIT_DIR, GIT_WORK_TREE, GIT_CONFIG, GIT_INDEX_FILE,
+    // GIT_EXEC_PATH, ...): same risk class as git's -C/--git-dir/--exec-path
+    // flags, which are unsafe for this reason
+    return name.startsWith("LD_") || name.startsWith("GIT_") || DANGEROUS_ENV_NAMES.has(name);
 }
 
 interface ConfinementOptions {
