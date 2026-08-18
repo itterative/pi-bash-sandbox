@@ -375,6 +375,32 @@ describe("getCwdConfinementPermission", () => {
         ]);
     });
 
+    describe("export builtin", () => {
+        runTests([
+            { desc: "export benign assignment", command: "export FOO=bar", expected: "allow:sandbox" },
+            { desc: "export in a chain", command: "export FOO=bar && cat file.txt", expected: "allow:sandbox" },
+            { desc: "export multiple assignments", command: "export FOO=1 BAR=2 && cat file.txt", expected: "allow:sandbox" },
+            { desc: "export bare name", command: "export FOO", expected: "allow:sandbox" },
+            { desc: "export empty value", command: "export FOO= && cat file.txt", expected: "allow:sandbox" },
+            { desc: "export -n unsets", command: "export -n FOO", expected: "allow:sandbox" },
+            { desc: "export value outside cwd is path-checked", command: "export FOO=/etc/passwd", expected: undefined },
+            { desc: "export value escaping cwd is path-checked", command: "export FOO=../etc/passwd", expected: undefined },
+            { desc: "export value in home is path-checked", command: "export FOO=~/x", expected: undefined },
+            { desc: "export sensitive value is rejected", command: "export FOO=.env", expected: undefined },
+            { desc: "export GIT_DIR is rejected", command: "export GIT_DIR=x", expected: undefined },
+            { desc: "export GIT_WORK_TREE is rejected", command: "export GIT_WORK_TREE=x && git status", expected: undefined },
+            { desc: "export LD_PRELOAD is rejected", command: "export LD_PRELOAD=x && cat file.txt", expected: undefined },
+            { desc: "export PATH is rejected", command: "export PATH=bin && cat file.txt", expected: undefined },
+            { desc: "export RIPGREP_CONFIG_PATH is rejected", command: "export RIPGREP_CONFIG_PATH=x", expected: undefined },
+            { desc: "export LESSOPEN is rejected", command: "export LESSOPEN=x", expected: undefined },
+            { desc: "export XDG_CONFIG_HOME is rejected", command: "export XDG_CONFIG_HOME=x", expected: undefined },
+            { desc: "export -f (function export) is rejected", command: "export -f myfunc", expected: undefined },
+            { desc: "export -p (env dump) is rejected", command: "export -p", expected: undefined },
+            { desc: "export invalid identifier is rejected", command: "export 'a b=1'", expected: undefined },
+            { desc: "export invalid assignment is rejected", command: "export =foo", expected: undefined },
+        ]);
+    });
+
     describe("redirection edge cases", () => {
         runTests([
             { desc: "stderr merged into stdout", command: "cat file.txt 2>&1", expected: "allow:sandbox" },

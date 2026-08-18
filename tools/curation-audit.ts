@@ -319,6 +319,10 @@ const CORPUS: Record<string, CorpusEntry[]> = {
     false: [{ argv: ["false"], note: "bash builtin; nonzero exit expected" }],
     echo: [{ argv: ["echo", "hello"], note: "bash builtin; positionals are data" }],
     printf: [{ argv: ["printf", "%s\\n", "hello"], note: "bash builtin; positionals are data" }],
+    export: [
+        // pure builtin (no /usr/bin/export): traced via `bash --norc -c`
+        { shell: "export FOO=bar", precheck: ["export", "FOO=bar"], note: "builtin; assignments checked" },
+    ],
 
     // system utilities
     date: [
@@ -360,6 +364,9 @@ const NEGATIVE_CORPUS: { label: string; argv: string[]; repo?: boolean; note: st
     { label: "find . -exec cat {}", argv: ["find", ".", "-exec", "cat", "{}"], note: "-exec runs programs" },
     { label: "awk '{print}' file.txt", argv: ["awk", "{print}", "file.txt"], note: "code execution" },
     { label: "curl http://example.com", argv: ["curl", "http://example.com"], note: "network" },
+    { label: "export GIT_DIR=x", argv: ["export", "GIT_DIR=x"], note: "state-relocating env name" },
+    { label: "export -p", argv: ["export", "-p"], note: "env dump would reach the output" },
+    { label: "export -f myfunc", argv: ["export", "-f", "myfunc"], note: "shell function export = code via env" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -558,12 +565,25 @@ function runEntry(command: string, entry: CorpusEntry, fixtureRoot: string, idx:
     const safeName = labelArgv.slice(0, 2).join("-").replace(/[^a-zA-Z0-9-]/g, "_");
     const traceFile = path.join(TRACE_DIR, `${String(idx).padStart(3, "0")}-${safeName}.log`);
 
+    // --norc: some systems' bash reads /etc/bashrc even for `bash -c`
+    // (Fedora: its non-interactive branch processes /etc/profile.d — Lmod
+    // init, debuginfod, grep-color setup, ...), which would pollute the
+    // execve set with machine-specific startup scripts. We audit the
+    // command, not the user's shell configuration (BASH_ENV/ENV are
+    // already stripped from the spawn environment).
     const inner = entry.shell
-        ? `strace -f -s 400 -o ${traceFile} -e trace=${TRACE_SYSCALLS} -- /usr/bin/bash -c "${entry.shell}"`
+        ? `strace -f -s 400 -o ${traceFile} -e trace=${TRACE_SYSCALLS} -- /usr/bin/bash --norc -c "${entry.shell}"`
         : `strace -f -s 400 -o ${traceFile} -e trace=${TRACE_SYSCALLS} -- ${entry.argv!.map(quoteArg).join(" ")}`;
 
     // config.default: deterministic mounts, independent of any active pi session
     const bwrapCmd = sandbox(BWRAP, inner, { cwd, config: sandboxConfig.default });
+    // BASH_ENV/ENV are stripped from the spawn environment: with them set
+    // (e.g. Lmod's init script), every bash -c sources a machine-specific
+    // startup script, which would pollute the execve assertions. In real use
+    // such scripts DO run (the sandbox inherits the agent env); their access
+    // is still covered by the path assertions (on this host the Lmod chain
+    // only touches mounted /etc files and ENOENT paths).
+    const { BASH_ENV: _bashEnv, ENV: _env, ...cleanEnv } = process.env;
     // stdin is always explicitly fed (default: empty) so no audited command
     // can ever read from this process's terminal
     const res = spawnSync("bash", ["-c", bwrapCmd], {
@@ -571,6 +591,7 @@ function runEntry(command: string, entry: CorpusEntry, fixtureRoot: string, idx:
         encoding: "utf8",
         timeout: 30_000,
         input: entry.stdin ?? "",
+        env: cleanEnv,
     });
 
     if (!fs.existsSync(traceFile)) {
@@ -589,6 +610,11 @@ function runEntry(command: string, entry: CorpusEntry, fixtureRoot: string, idx:
     const violations: string[] = [];
     const calls = parseTrace(fs.readFileSync(traceFile, "utf8"));
     const allowedExecve = new Set<string>([labelArgv[0], ...(entry.helpers ?? [])]);
+    // shell entries are traced as `bash -c '...'` — bash is the program that
+    // runs the builtin
+    if (entry.shell) {
+        allowedExecve.add("bash");
+    }
 
     for (const call of calls) {
         if (call.syscall === "connect") {

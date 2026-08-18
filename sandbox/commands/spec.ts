@@ -43,8 +43,12 @@ export interface CommandSpec {
      *   the arguments (then all positionals are paths)
      * - "first-path": the first positional is a path, the rest are data
      *   (e.g. archive tools: the archive, then member names)
+     * - "assignments": positionals are environment assignments (e.g. the
+     *   export builtin): NAME=VALUE positionals are checked like leading
+     *   env assignments (dangerous names ineligible, value path-checked);
+     *   a bare NAME only marks an existing variable for export (no access)
      */
-    positionals?: "paths" | "none" | "ignore" | "first-pattern" | "first-path";
+    positionals?: "paths" | "none" | "ignore" | "first-pattern" | "first-path" | "assignments";
     /** Flag semantics, keyed by full flag name ("-n" or "--max-count"). */
     flags?: Record<string, FlagSpec>;
     /** For "first-pattern": flags that provide the pattern, making all positionals paths. */

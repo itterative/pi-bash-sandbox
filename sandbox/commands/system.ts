@@ -10,6 +10,18 @@ export const SYSTEM_COMMANDS: Record<string, CommandSpec> = {
     false: { positionals: "none" },
     echo: { positionals: "ignore" },
     printf: { positionals: "ignore" },
+    // export: NAME=VALUE positionals are checked like leading env
+    // assignments (dangerous names ineligible, values path-checked); bare
+    // names only mark existing variables for export
+    export: {
+        positionals: "assignments",
+        flags: {
+            // -f exports shell functions as environment (code via env);
+            // -p prints the whole environment (inherited secrets would
+            // reach the output)
+            "-f": UNSAFE, "-p": UNSAFE,
+        },
+    },
 
     date: {
         flags: {

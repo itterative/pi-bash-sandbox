@@ -514,6 +514,28 @@ function extractCommandPaths(
                     paths.push(arg);
                 }
                 continue;
+            case "assignments": {
+                // env-assignment positional (the export builtin): NAME=VALUE
+                // is checked like a leading env assignment (dangerous names
+                // ineligible, value path-checked); a bare NAME only marks an
+                // existing variable for export — nothing to check
+                const eq = arg.indexOf("=");
+                if (eq === -1) {
+                    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(arg)) {
+                        return null;
+                    }
+                    continue;
+                }
+                const name = arg.slice(0, eq);
+                if (eq === 0 || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+                    return null;
+                }
+                if (isDangerousEnvName(name)) {
+                    return null;
+                }
+                paths.push(arg.slice(eq + 1));
+                continue;
+            }
             default:
                 paths.push(arg);
         }
