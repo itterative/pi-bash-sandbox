@@ -12,8 +12,9 @@ export const READER_COMMANDS: Record<string, CommandSpec> = {
             "-s": VALUE, "--sleep-interval": VALUE, "--pid": VALUE,
         },
     },
-    less: {},
-    more: {},
+    // NOTE: less/more are intentionally NOT whitelisted: with an inherited
+    // LESSOPEN/LESSCLOSE env var (common via the lesspipe package), they pipe
+    // file contents through a user script that can execute arbitrary programs.
     wc: { flags: { "--files0-from": PATH_VALUE } },
     file: {
         flags: {
