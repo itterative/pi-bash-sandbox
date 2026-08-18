@@ -240,6 +240,47 @@ describe("getCwdConfinementPermission", () => {
         ]);
     });
 
+    describe("git", () => {
+        runTests([
+            { desc: "git status", command: "git status", expected: "allow:sandbox" },
+            { desc: "git status -sb", command: "git status -sb", expected: "allow:sandbox" },
+            { desc: "git status with pathspec", command: "git status src", expected: "allow:sandbox" },
+            { desc: "git status pathspec outside cwd", command: "git status /etc", expected: undefined },
+            { desc: "git status pathspec to .git is sensitive", command: "git status .git", expected: undefined },
+            { desc: "git log", command: "git log --oneline -20", expected: "allow:sandbox" },
+            { desc: "git log value flags", command: "git log --since 2024-01-01 --author alice -n 5", expected: "allow:sandbox" },
+            { desc: "git log rev range", command: "git log main..develop", expected: "allow:sandbox" },
+            { desc: "git log -- pathspec", command: "git log -- src/index.ts", expected: "allow:sandbox" },
+            { desc: "git log --stat is metadata only", command: "git log --stat -3", expected: "allow:sandbox" },
+            { desc: "git log -C is detect-copies, not the global -C", command: "git log -C", expected: "allow:sandbox" },
+            { desc: "git log -p prints history contents: falls back", command: "git log -p", expected: undefined },
+            { desc: "git log --patch is unsafe", command: "git log --patch", expected: undefined },
+            { desc: "git log -U implies patch: falls back", command: "git log -U3", expected: undefined },
+            { desc: "git ls-files", command: "git ls-files", expected: "allow:sandbox" },
+            { desc: "git ls-files pathspec", command: "git ls-files src", expected: "allow:sandbox" },
+            { desc: "git ls-files others", command: "git ls-files -z --others --exclude-standard", expected: "allow:sandbox" },
+            { desc: "git describe", command: "git describe --tags", expected: "allow:sandbox" },
+            { desc: "git rev-parse", command: "git rev-parse --abbrev-ref HEAD", expected: "allow:sandbox" },
+            { desc: "git rev-parse --show-toplevel", command: "git rev-parse --show-toplevel", expected: "allow:sandbox" },
+            { desc: "git branch list", command: "git branch -av", expected: "allow:sandbox" },
+            { desc: "git branch create: falls back", command: "git branch feature", expected: undefined },
+            { desc: "git branch delete: falls back", command: "git branch -d feature", expected: undefined },
+            { desc: "git tag list", command: "git tag -n", expected: "allow:sandbox" },
+            { desc: "git tag create: falls back", command: "git tag v1.0.0", expected: undefined },
+            { desc: "content-printing subcommand diff: falls back", command: "git diff", expected: undefined },
+            { desc: "content-printing subcommand show: falls back", command: "git show HEAD", expected: undefined },
+            { desc: "credential-printing subcommand remote: falls back", command: "git remote -v", expected: undefined },
+            { desc: "config subcommand: falls back", command: "git config --list", expected: undefined },
+            { desc: "network subcommand: falls back", command: "git fetch origin", expected: undefined },
+            { desc: "mutating subcommand: falls back", command: "git checkout main", expected: undefined },
+            { desc: "global -c before subcommand: falls back", command: "git -c diff.external=evil log", expected: undefined },
+            { desc: "global -C before subcommand: falls back", command: "git -C /other status", expected: undefined },
+            { desc: "global --git-dir before subcommand: falls back", command: "git --git-dir /x log", expected: undefined },
+            { desc: "bare git without subcommand: falls back", command: "git", expected: undefined },
+            { desc: "git -- status", command: "git -- status", expected: "allow:sandbox" },
+        ]);
+    });
+
     describe("subshells and process substitution", () => {
         runTests([
             { desc: "subshell with known command", command: "cat $(echo file.txt)", expected: "allow:sandbox" },

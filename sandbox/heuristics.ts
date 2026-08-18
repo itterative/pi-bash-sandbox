@@ -40,6 +40,15 @@ export interface CommandSpec {
     unsafeFlags?: string[];
     /** For "first-pattern": flags that provide the pattern, making all positionals paths. */
     patternBypassFlags?: string[];
+    /**
+     * For commands that dispatch on a subcommand (e.g. git): the first
+     * positional must be one of these names, otherwise the command is
+     * ineligible. The remaining arguments are evaluated against the
+     * subcommand's spec. The parent spec's unsafeFlags apply before the
+     * subcommand only (after it they would collide with subcommand flags,
+     * e.g. `git log -C` means detect-copies, not change directory).
+     */
+    subcommands?: Record<string, CommandSpec>;
 }
 
 /**
@@ -371,6 +380,73 @@ export const KNOWN_COMMANDS: Record<string, CommandSpec> = {
     },
     zipinfo: { valueFlags: ["-T"] },
 
+    // version control (read-only inspection of the repo in cwd).
+    // Excluded subcommands: diff/show/cat-file print file CONTENTS from the
+    // worktree or history (a sensitive file's content can reach the output
+    // with no sensitive path argument), remote/config can print credentials
+    // stored in .git/config, and fetch/pull/push/checkout/... write or use
+    // the network. Those need explicit allow rules or output protections.
+    // Note: `git status` refreshes .git/index stat caches, which is normal
+    // git behavior (it happens outside the sandbox too).
+    git: {
+        // global flags, valid before the subcommand: -c can select external
+        // programs (diff.external, core.sshCommand, gpg.program, ...),
+        // -C/--git-dir/--work-tree relocate the repo, --exec-path changes
+        // which helpers git runs
+        unsafeFlags: ["-c", "-C", "--git-dir", "--work-tree", "--exec-path"],
+        subcommands: {
+            // positionals are pathspecs
+            status: {},
+            log: {
+                valueFlags: [
+                    "-n", "--max-count",
+                    "--since", "--until", "--after", "--before",
+                    "--author", "--grep",
+                    "-S", "-G",
+                    "--format", "--pretty",
+                    "--diff-filter",
+                ],
+                // patch output prints file contents from history
+                unsafeFlags: ["-p", "--patch", "-U", "--unified"],
+            },
+            "ls-files": {
+                valueFlags: ["--exclude", "--with-tree"],
+            },
+            describe: {
+                valueFlags: ["--abbrev", "--candidates", "--matches", "--exclude"],
+            },
+            // positionals are revisions, not paths
+            "rev-parse": {
+                positionals: "ignore",
+                valueFlags: ["--short", "--abbrev", "--abbrev-ref", "--git-path", "--verify"],
+            },
+            shortlog: {
+                valueFlags: [
+                    "-n", "--max-count",
+                    "--since", "--until", "--after", "--before",
+                    "--author", "--grep",
+                    "--format", "--pretty",
+                ],
+                unsafeFlags: ["-p", "--patch"],
+            },
+            // alias of log
+            whatchanged: {
+                valueFlags: [
+                    "-n", "--max-count",
+                    "--since", "--until", "--after", "--before",
+                    "--author", "--grep",
+                    "-S", "-G",
+                    "--format", "--pretty",
+                    "--diff-filter",
+                ],
+                unsafeFlags: ["-p", "--patch", "-U", "--unified"],
+            },
+            // list mode only: a ref name as positional means create/delete
+            branch: { positionals: "none" },
+            tag: { positionals: "none" },
+        },
+    },
+
     // no filesystem arguments
     pwd: { positionals: "none" },
     true: { positionals: "none" },
@@ -688,9 +764,25 @@ function extractCommandPaths(
     const paths: string[] = [];
     let afterDoubleDash = false;
     let positionalSeen = false;
-    const positionals = spec.positionals ?? "paths";
-    const patternProvided =
-        positionals !== "first-pattern" || hasPatternBypass(args, spec);
+
+    // Commands with subcommands (e.g. git) dispatch on the first positional:
+    // it must name a known subcommand, after which the subcommand's spec
+    // governs the remaining arguments. The parent's unsafeFlags apply before
+    // dispatch only (after it they would collide with subcommand flags,
+    // e.g. `git log -C` means detect-copies, not change directory).
+    const subcommands = spec.subcommands;
+    let activeSpec = spec;
+    let dispatched = subcommands === undefined;
+    let positionals = activeSpec.positionals ?? "paths";
+    let patternProvided =
+        positionals !== "first-pattern" || hasPatternBypass(args, activeSpec);
+
+    const adoptSpec = (s: CommandSpec) => {
+        activeSpec = s;
+        positionals = s.positionals ?? "paths";
+        patternProvided =
+            positionals !== "first-pattern" || hasPatternBypass(args, s);
+    };
 
     for (let i = 1; i < args.length; i++) {
         const arg = args[i];
@@ -735,15 +827,19 @@ function extractCommandPaths(
                 const name = eq === -1 ? arg : arg.slice(0, eq);
                 const inline = eq === -1 ? undefined : arg.slice(eq + 1);
 
-                if (spec.unsafeFlags?.includes(name)) {
+                if (!dispatched && spec.unsafeFlags?.includes(name)) {
                     return null;
                 }
 
-                if (spec.valueFlags?.includes(name)) {
+                if (activeSpec.unsafeFlags?.includes(name)) {
+                    return null;
+                }
+
+                if (activeSpec.valueFlags?.includes(name)) {
                     continue;
                 }
 
-                if (spec.pathFlags?.includes(name)) {
+                if (activeSpec.pathFlags?.includes(name)) {
                     const value = inline ?? args[++i];
                     if (value === undefined) {
                         return null;
@@ -761,11 +857,15 @@ function extractCommandPaths(
 
             if (arg.length > 1 && arg.startsWith("-")) {
                 // whole-arg unsafe flags (e.g. find -delete, find -exec)
-                if (spec.unsafeFlags?.includes(arg)) {
+                if (!dispatched && spec.unsafeFlags?.includes(arg)) {
                     return null;
                 }
 
-                const next = handleShortCluster(args, i, spec, paths);
+                if (activeSpec.unsafeFlags?.includes(arg)) {
+                    return null;
+                }
+
+                const next = handleShortCluster(args, i, activeSpec, paths);
                 if (next === null) {
                     return null;
                 }
@@ -775,6 +875,16 @@ function extractCommandPaths(
         }
 
         // positional argument
+        if (!dispatched) {
+            const sub = subcommands![arg];
+            if (sub === undefined) {
+                return null;
+            }
+            adoptSpec(sub);
+            dispatched = true;
+            continue;
+        }
+
         switch (positionals) {
             case "none":
                 return null;
@@ -790,6 +900,11 @@ function extractCommandPaths(
             default:
                 paths.push(arg);
         }
+    }
+
+    // a subcommand-taking command with no subcommand (e.g. bare `git`)
+    if (!dispatched) {
+        return null;
     }
 
     return paths;
